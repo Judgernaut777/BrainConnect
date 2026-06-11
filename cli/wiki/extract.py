@@ -82,26 +82,62 @@ def _doc(path: Path) -> str:
 
 
 def _image(path: Path, tesseract_cmd: str | None = None) -> str:
-    """Image -> a markdown stub. OCR (Tesseract) is best-effort and supplementary;
-    the Claude session's VISION is the primary signal (it *views* the image — see
-    gather.md). So we NEVER fail the ingest when OCR is unavailable: the image is
-    still registered and copied to raw/assets/ for the session to look at."""
+    """Image -> a markdown stub. OCR is best-effort and supplementary; the Claude
+    session's VISION is the primary signal (it *views* the image — see gather.md).
+    So we NEVER fail the ingest when OCR is unavailable: the image is still
+    registered and copied to raw/assets/ for the session to look at."""
     stub = f"# image: {path.name}\n\n"
+    text = _ocr_image(path, tesseract_cmd)
+    if text:
+        return stub + f"OCR text:\n\n{text}\n"
+    return stub + "_No machine-readable text found; view the image directly._\n"
+
+
+def _ocr_image(path: Path, tesseract_cmd: str | None = None) -> str:
+    """Best-effort image OCR. Prefers RapidOCR (pure-pip, bundled with the [docs]
+    extra via Docling — no system binary), then Tesseract if its binary is
+    installed/configured. Returns '' if no backend works. Never raises."""
+    # 1) RapidOCR — no system binary required.
+    try:
+        try:
+            from rapidocr import RapidOCR  # rapidocr >= 2.x
+        except ImportError:
+            from rapidocr_onnxruntime import RapidOCR  # legacy package name
+        result = RapidOCR()(str(path))
+        text = _rapidocr_text(result)
+        if text:
+            return text
+    except Exception:
+        pass
+    # 2) Tesseract — needs the system binary (winget/UB-Mannheim) + optional path.
     try:
         import pytesseract  # type: ignore
         from PIL import Image  # type: ignore
-    except ImportError:
-        return stub + ("_OCR not installed (pip install '.[docs]' for text-in-image); "
-                       "view the image directly._\n")
-    if tesseract_cmd:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-    try:
-        text = (pytesseract.image_to_string(Image.open(path)) or "").strip()
-    except Exception as e:
-        return stub + f"_OCR unavailable ({e}); view the image directly._\n"
-    if text:
-        return stub + f"OCR text:\n\n{text}\n"
-    return stub + "_No machine-readable text; view the image directly._\n"
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        return (pytesseract.image_to_string(Image.open(path)) or "").strip()
+    except Exception:
+        return ""
+
+
+def _rapidocr_text(result) -> str:
+    """Flatten a RapidOCR result across versions: a result object with `.txts`,
+    or a `(items, elapse)` tuple, or a list of `[box, text, score]`."""
+    if result is None:
+        return ""
+    txts = getattr(result, "txts", None)
+    if txts:
+        return " ".join(str(t) for t in txts).strip()
+    data = result[0] if isinstance(result, tuple) else result
+    if not data:
+        return ""
+    out = []
+    for item in data:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            out.append(str(item[1]))
+        elif isinstance(item, str):
+            out.append(item)
+    return " ".join(out).strip()
 
 
 def _media(path: Path, kind: str) -> str:

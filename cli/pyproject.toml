@@ -12,7 +12,7 @@ dependencies = [
 # the project's "zero model calls in the CLI" boundary intact.
 [project.optional-dependencies]
 search = ["ddgs>=6"]                                            # robust DuckDuckGo (scrape fallback if absent)
-docs = ["docling>=2.0", "pytesseract>=0.3.10", "pillow>=10"]   # PDF/DOCX/OCR
+docs = ["docling>=2.0", "rapidocr>=2", "onnxruntime>=1.17", "pillow>=10", "pytesseract>=0.3.10"]  # PDF/DOCX + image OCR (RapidOCR, no system binary; Tesseract optional)
 media = ["youtube-transcript-api>=0.6"]                         # video captions
 whisper = ["faster-whisper>=1.0"]                               # local ASR (needs ffmpeg)
 semantic = ["sentence-transformers>=3", "numpy>=1.26"]          # local embeddings
