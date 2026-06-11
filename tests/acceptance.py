@@ -82,6 +82,8 @@ def main():
     ver = c.execute("PRAGMA user_version").fetchone()[0]
     check("migrate adds mime_type/category/tags", {"mime_type", "category", "tags"} <= cols)
     check("migrate bumps user_version to latest", ver == migratemod.latest_version())
+    _tbls = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    check("migrate v3 creates embeddings table", "embeddings" in _tbls)
     check("existing row gets default tags='[]'",
           c.execute("SELECT tags FROM sources WHERE hash='h1'").fetchone()[0] == "[]")
     migratemod.migrate(c)  # idempotent re-run
@@ -348,6 +350,48 @@ def main():
     else:
         sys.modules.pop("youtube_transcript_api", None)
     check("transcribe guarded when [media] extra absent", tguard)
+
+    # ---------------- Semantic search ----------------
+    print("[embed] semantic search (guard always; ranking if WIKI_TEST_SEMANTIC)")
+    import os as _os
+    from wiki import embed as embedmod
+    etmp2 = Path(tempfile.mkdtemp(prefix="wikibrain-embed-"))
+    eroot = make_repo(etmp2)
+    _savedst = sys.modules.get("sentence_transformers")
+    sys.modules["sentence_transformers"] = None  # force [semantic] absent
+    eguard = False
+    try:
+        with Repo.open(start=eroot) as r:
+            embedmod.index(r)
+    except embedmod.EmbedError as e:
+        eguard = "[semantic]" in str(e)
+    if _savedst is not None:
+        sys.modules["sentence_transformers"] = _savedst
+    else:
+        sys.modules.pop("sentence_transformers", None)
+    check("embed guarded when [semantic] extra absent", eguard)
+
+    # Real ranking — opt-in (downloads a model); keeps the default suite offline.
+    if _os.environ.get("WIKI_TEST_SEMANTIC"):
+        stmp = Path(tempfile.mkdtemp(prefix="wikibrain-sem-"))
+        sroot = make_repo(stmp)
+        write(sroot / "s.md", "src")
+        with Repo.open(start=sroot) as r:
+            ssid, _ = ingest.add(r, str(sroot / "s.md"), origin="clip", title="s")
+            for txt in ["Redis is an in-memory key-value cache.",
+                        "Postgres is a relational SQL database.",
+                        "The cat sat on the warm windowsill."]:
+                r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, "
+                     "created_at) VALUES (?, ?, 0.9, 'clip', 'promoted', '2026-01-01T00:00:00Z')",
+                     (txt, ssid))
+            r.conn.commit()
+            n_emb = embedmod.index(r)
+            hits = embedmod.semantic_search(r, "fast caching layer for sessions", k=3)
+        check("embed indexed 3 claims", n_emb == 3)
+        check("semantic top hit is the cache claim",
+              bool(hits) and "cache" in hits[0]["text"].lower())
+    else:
+        print("    (real ranking skipped — set WIKI_TEST_SEMANTIC=1 with [semantic] installed)")
 
     # ---------------- Phase 1 ----------------
     print("[Phase 1] ingest / search / graph")

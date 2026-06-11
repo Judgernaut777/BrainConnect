@@ -33,9 +33,10 @@ raw sources → SQLite DB (claims + context graph = truth) → Obsidian wiki (ge
 
 ## Command cheat-sheet
 Ingest: `wiki add <file|url> [--origin clip]` · `wiki capture --origin <h> "<text>"`
-· `wiki drop` (ingest the drop folder) · `wiki pending`
+· `wiki drop` (ingest the drop folder) · `wiki transcribe <url|file>` · `wiki pending`
 · `wiki file-claims --source <id> --json <file>`
-Query: `wiki search <terms> [--promoted-only]` · `wiki graph <entity> [--hops N]`
+Query: `wiki search <terms> [--promoted-only] [--semantic|--hybrid]` ·
+`wiki embed [--all]` · `wiki graph <entity> [--hops N]`
 Queue: `wiki queue add|list|next|done|attempt`
 Render: `wiki render [--all]` · `wiki digest [--day YYYY-MM-DD]` ·
 `wiki synthesis get|set <page>` · `wiki commit "<msg>"`

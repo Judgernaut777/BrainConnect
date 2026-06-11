@@ -47,3 +47,8 @@ ocr = true                 # allow Tesseract OCR for flat images
 tesseract_cmd = ""         # path to tesseract.exe on Windows, or "" to use PATH
 docling_ocr = true         # let Docling OCR scanned PDFs
 whisper_model = "base"     # local ASR model size (only if the [whisper] extra is installed)
+
+[embed]
+# Local-embedding semantic search (needs the optional [semantic] extra: torch).
+model = "sentence-transformers/all-MiniLM-L6-v2"
+enabled = false

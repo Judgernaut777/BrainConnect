@@ -73,11 +73,14 @@ Run the CLI any of these ways:
 ## Quick tour
 ```powershell
 .\wiki add https://example.com/article --origin clip   # one door in
+.\wiki drop                                             # ingest files from the drop folder
+.\wiki transcribe https://youtu.be/VIDEO_ID            # ingest a video's captions
 .\wiki pending                                          # what needs extraction
 # (a model produces extraction JSON per the contract in the skill)
 .\wiki file-claims --source 1 --json extract.json
 .\wiki gate                                             # auto-promote the boring tier
-.\wiki render                                           # rebuild dirty pages
+.\wiki render ; .\wiki digest                          # rebuild pages + today's digest
+.\wiki search "caching" --hybrid                       # keyword + semantic (needs [semantic])
 .\wiki lint ; .\wiki health                             # self-check
 .\wiki commit "manual ingest"
 ```

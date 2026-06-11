@@ -135,10 +135,21 @@ CREATE TABLE gather_events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX gather_events_day ON gather_events(day, kind, qid);
+
+-- Optional local-embedding index for semantic search (the [semantic] extra).
+-- vec is packed float32 (little-endian), length dim*4. Affects ranking only,
+-- never the byte-deterministic render layer.
+CREATE TABLE embeddings (
+  claim_id INTEGER PRIMARY KEY REFERENCES claims(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  dim INTEGER NOT NULL,
+  vec BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 ALL_DDL = CORE_DDL + EXT_DDL
 
 # User-version stamped on the DB. Keep in sync with migrate.latest_version()
 # (the migration runner carries existing DBs forward to this version).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3

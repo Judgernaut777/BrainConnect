@@ -44,6 +44,10 @@ DEFAULTS = {
         "docling_ocr": True,    # let Docling OCR scanned PDFs
         "whisper_model": "base",  # local ASR model size (only if [whisper] extra)
     },
+    "embed": {
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "enabled": False,       # off by default; the [semantic] extra is heavy (torch)
+    },
 }
 
 
@@ -114,3 +118,6 @@ class Config:
 
     def extract_cfg(self, key: str):
         return self.data["extract"].get(key)
+
+    def embed_cfg(self, key: str):
+        return self.data["embed"].get(key)

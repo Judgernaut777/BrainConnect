@@ -25,6 +25,12 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE sources ADD COLUMN category TEXT",
         "ALTER TABLE sources ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
     ],
+    3: [  # local-embedding index for semantic search ([semantic] extra)
+        "CREATE TABLE embeddings ("
+        " claim_id INTEGER PRIMARY KEY REFERENCES claims(id) ON DELETE CASCADE,"
+        " model TEXT NOT NULL, dim INTEGER NOT NULL, vec BLOB NOT NULL,"
+        " created_at TEXT NOT NULL)",
+    ],
 }
 
 

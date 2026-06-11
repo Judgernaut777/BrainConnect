@@ -11,7 +11,8 @@ from .config import Config
 from .db import Repo, init_db
 from . import (ingest, search as searchmod, queue as queuemod, render as rendermod,
                lint as lintmod, health as healthmod, gather, gate as gatemod,
-               review, fetch as fetchmod, drop as dropmod, extract as extractmod)
+               review, fetch as fetchmod, drop as dropmod, extract as extractmod,
+               embed as embedmod)
 
 SCAFFOLD_DIRS = [
     "raw", "raw/assets", "inbox",
@@ -136,20 +137,41 @@ def cmd_dump(args):
 # --- search / graph ---------------------------------------------------------
 def cmd_search(args):
     with Repo.open() as repo:
-        res = searchmod.search(repo, " ".join(args.terms), promoted_only=args.promoted_only)
+        terms = " ".join(args.terms)
+        try:
+            if args.semantic:
+                res = embedmod.semantic_search(repo, terms)
+            elif args.hybrid:
+                res = embedmod.hybrid_search(repo, terms)
+            else:
+                res = searchmod.search(repo, terms, promoted_only=args.promoted_only)
+        except embedmod.EmbedError as e:
+            sys.exit(f"error: {e}")
         if _emit(res, args.json):
             return
         if not res:
             print("no matches")
             return
         for r in res:
-            if r["kind"] == "claim":
-                print(f"  claim #{r['id']} [{r['status']}/{r['origin']}] "
-                      f"(src #{r['source_id']}: {r['source_title']})")
+            if r.get("kind") == "claim":
+                extra = (f" score={r['score']}" if "score" in r
+                         else f" rrf={r['rrf']}" if "rrf" in r else "")
+                src = f": {r['source_title']}" if r.get("source_title") else ""
+                print(f"  claim #{r['id']} [{r.get('status','?')}/{r.get('origin','?')}]"
+                      f" (src #{r['source_id']}{src}){extra}")
                 print(f"    {r['text']}")
             else:
-                print(f"  summary #{r['id']} [{r['status']}] (src #{r['source_id']})")
+                print(f"  summary #{r['id']} [{r.get('status','?')}] (src #{r['source_id']})")
                 print(f"    {r['text']}")
+
+
+def cmd_embed(args):
+    with Repo.open() as repo:
+        try:
+            n = embedmod.index(repo, only_missing=not args.all)
+        except embedmod.EmbedError as e:
+            sys.exit(f"error: {e}")
+        print(f"embedded {n} claim(s)")
 
 
 def cmd_graph(args):
@@ -418,8 +440,15 @@ def build_parser() -> argparse.ArgumentParser:
     sf.set_defaults(func=cmd_file_claims)
 
     ss = sub.add_parser("search"); ss.add_argument("terms", nargs="+")
-    ss.add_argument("--promoted-only", action="store_true"); addj(ss)
+    ss.add_argument("--promoted-only", action="store_true")
+    ss.add_argument("--semantic", action="store_true", help="local-embedding search")
+    ss.add_argument("--hybrid", action="store_true", help="merge keyword + semantic (RRF)")
+    addj(ss)
     ss.set_defaults(func=cmd_search)
+
+    sem = sub.add_parser("embed"); sem.add_argument("--all", action="store_true",
+                                                    help="re-embed all claims (not just missing)")
+    sem.set_defaults(func=cmd_embed)
 
     sg = sub.add_parser("graph"); sg.add_argument("entity")
     sg.add_argument("--hops", type=int, default=1); addj(sg)
