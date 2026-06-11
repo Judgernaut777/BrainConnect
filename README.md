@@ -117,3 +117,17 @@ No API keys in repo/env/config. Leave overflow billing OFF in account settings.
 After running the tasks for a few days, check the account usage page — expect
 zero Agent SDK credit consumed. If credit IS drawn, disable the tasks and fall
 back to the interactive maintain pass. (BUILD_SPEC §10.)
+
+## Acknowledgments
+wiki-brain builds on ideas from others:
+
+- **Andrej Karpathy's "wiki"** idea for a personal, compounding knowledge base —
+  the seed concept of compiling what you learn into a durable, linkable wiki
+  instead of re-deriving it per query.
+- **Nate B Jones'** video [*Karpathy's Wiki vs. Open Brain*](https://www.youtube.com/watch?v=dxq7WtWxi44)
+  and his [newsletter](https://natesnewsletter.substack.com/), which framed the
+  move this project is built around: **pairing the Karpathy-style wiki with a
+  database** as the source of truth, so the wiki becomes a generated projection.
+
+The architecture here — raw sources → SQLite (the truth) → a generated Obsidian
+wiki — is a direct take on that database-backed-wiki idea.
