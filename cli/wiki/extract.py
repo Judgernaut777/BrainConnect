@@ -82,25 +82,26 @@ def _doc(path: Path) -> str:
 
 
 def _image(path: Path, tesseract_cmd: str | None = None) -> str:
-    """Flat image -> OCR text via Tesseract. The result is a stub; the Claude
-    session also *views* the image (see gather.md) to describe + label it."""
+    """Image -> a markdown stub. OCR (Tesseract) is best-effort and supplementary;
+    the Claude session's VISION is the primary signal (it *views* the image — see
+    gather.md). So we NEVER fail the ingest when OCR is unavailable: the image is
+    still registered and copied to raw/assets/ for the session to look at."""
+    stub = f"# image: {path.name}\n\n"
     try:
         import pytesseract  # type: ignore
         from PIL import Image  # type: ignore
-    except ImportError as e:
-        raise ExtractError(
-            f"image OCR needs the [docs] extra: pip install '.[docs]' ({path.name})") from e
+    except ImportError:
+        return stub + ("_OCR not installed (pip install '.[docs]' for text-in-image); "
+                       "view the image directly._\n")
     if tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
     try:
         text = (pytesseract.image_to_string(Image.open(path)) or "").strip()
     except Exception as e:
-        raise ExtractError(
-            f"tesseract OCR failed on {path.name}: {e} "
-            f"(is the tesseract binary installed / on PATH?)") from e
-    body = f"OCR text:\n\n{text}\n" if text else \
-        "_No machine-readable text; view the image directly._\n"
-    return f"# image: {path.name}\n\n{body}"
+        return stub + f"_OCR unavailable ({e}); view the image directly._\n"
+    if text:
+        return stub + f"OCR text:\n\n{text}\n"
+    return stub + "_No machine-readable text; view the image directly._\n"
 
 
 def _media(path: Path, kind: str) -> str:

@@ -294,6 +294,17 @@ def main():
     else:
         sys.modules.pop("docling.document_converter", None)
     check("doc extraction guarded with [docs] install hint", guarded)
+    # images must NEVER be skipped for lack of OCR — the session reads them via
+    # vision; OCR is a bonus. Force pytesseract absent -> still returns a stub.
+    _savedpt = sys.modules.get("pytesseract")
+    sys.modules["pytesseract"] = None
+    img_stub = extractmod._image(Path("pic.png"))
+    if _savedpt is not None:
+        sys.modules["pytesseract"] = _savedpt
+    else:
+        sys.modules.pop("pytesseract", None)
+    check("image degrades gracefully without OCR (no raise, still a stub)",
+          "image: pic.png" in img_stub and "view the image" in img_stub.lower())
 
     # image drop: monkeypatch the OCR backend so no tesseract binary is needed
     itmp = Path(tempfile.mkdtemp(prefix="wikibrain-img-"))
