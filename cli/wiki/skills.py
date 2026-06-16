@@ -283,6 +283,15 @@ def revert(repo: Repo, name: str, to: int | None = None) -> dict:
         if repo.one("SELECT 1 FROM claims WHERE id = ?", (cid,)):
             repo.ex("INSERT OR IGNORE INTO skill_claims(skill_id, claim_id) VALUES (?,?)",
                     (row["id"], cid))
+    # Revert re-approves and re-renders, so it must clear the SAME gate as approve:
+    # a since-rejected source claim must not slip back into an approved skill. The
+    # writes above are uncommitted, so raising here rolls them back (no finalize).
+    restored = _require(repo, name)
+    blocking = [m for sev, m in _validate(repo, restored) if sev == "error"]
+    if blocking:
+        repo.conn.rollback()   # discard the uncommitted restore — a blocked revert is a no-op
+        raise SkillError(f"error: cannot revert {name} to v{to}: "
+                         + "; ".join(blocking))
     newv = _snapshot(repo, row["id"], f"reverted to v{to}")
     repo.finalize("skill-revert", f"{name} -> v{to} (now v{newv})")
     path = render_one(repo, _require(repo, name))

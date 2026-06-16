@@ -140,9 +140,9 @@ def cmd_search(args):
         terms = " ".join(args.terms)
         try:
             if args.semantic:
-                res = embedmod.semantic_search(repo, terms)
+                res = embedmod.semantic_search(repo, terms, promoted_only=args.promoted_only)
             elif args.hybrid:
-                res = embedmod.hybrid_search(repo, terms)
+                res = embedmod.hybrid_search(repo, terms, promoted_only=args.promoted_only)
             else:
                 res = searchmod.search(repo, terms, promoted_only=args.promoted_only)
         except embedmod.EmbedError as e:

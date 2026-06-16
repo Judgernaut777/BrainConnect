@@ -838,6 +838,26 @@ def main():
                   for x in skillsmod.lint(r, "p7-prov")))
         skillsmod.archive(r, "p7-prov")
 
+        # P1: revert re-approves + re-renders, so it must clear the same gate —
+        # reverting to a version whose source claim is no longer promoted is
+        # blocked (this previously bypassed the approve gate).
+        rclaim = r.one("SELECT id FROM claims WHERE status='promoted' ORDER BY id LIMIT 1")["id"]
+        skillsmod.new(r, "p7-rev", "Revert gate test.", claims=[rclaim])
+        skillsmod.set_body(r, "p7-rev", "# v1\nbody one")
+        skillsmod.approve(r, "p7-rev")          # v1 (claim promoted)
+        skillsmod.set_body(r, "p7-rev", "# v2\nbody two")
+        skillsmod.approve(r, "p7-rev")          # v2
+        review.reject(r, [rclaim])              # v1's claim is now rejected
+        revert_blocked = False
+        try:
+            skillsmod.revert(r, "p7-rev", to=1)
+        except skillsmod.SkillError:
+            revert_blocked = True
+        check("revert blocked when restored version's claim is no longer promoted",
+              revert_blocked)
+        check("blocked revert left the live body unchanged (v2)",
+              "body two" in skillsmod.get_body(r, "p7-rev"))
+
         # client config snippet is well-formed and points at the repo root
         cc = mcpmod.client_config(r, read_only=True)
         srv = cc["mcpServers"]["wiki-brain"]
