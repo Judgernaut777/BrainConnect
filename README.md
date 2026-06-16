@@ -7,8 +7,9 @@
 
 A personal, compounding knowledge base with one direction of flow:
 
-```
-raw sources → SQLite DB (claims + context graph = truth) → Obsidian wiki (generated view)
+```mermaid
+flowchart LR
+    raw["raw sources"] --> db[("SQLite DB<br/>claims + context graph = truth")] --> wiki["Obsidian wiki<br/>(generated view)"]
 ```
 
 **Key-free by default.** The CLI does pure-code structure (ingest, render, search,
@@ -18,16 +19,14 @@ optional *premium research tier* (Firecrawl / mcp-omnisearch) can be layered in 
 the session level, with its keys held outside this repo, so the project itself
 stays secret-free (`wiki lint` enforces it).
 
-```
-            ┌──────────────────── ingest (one door) ────────────────────┐
- bookmarks  │  wiki add · wiki capture · wiki drop · wiki transcribe     │
- web pages ─┼─▶  raw/  ──▶  SQLite DB (claims + entities + context) ◀── truth
- PDFs/imgs  │        ▲                    │                              │
- captures   └────────┼────────────────────┼──────────────────────────────┘
-                     │ (model judgment)    │ wiki render (pure code)
-            Claude sessions:               ▼
-            night = gather (Haiku)   wiki/  (generated Obsidian vault — never hand-edit)
-            morning = maintain (Sonnet)
+```mermaid
+flowchart TB
+    src["bookmarks · web pages<br/>PDFs / images · session captures"]
+    src -->|"one door<br/>wiki add · capture · drop · transcribe"| raw[("raw/")]
+    raw -->|"model judgment — Claude sessions<br/>night = gather (Haiku) · morning = maintain (Sonnet)"| db[("SQLite DB<br/>claims + entities + context = truth")]
+    db -->|"wiki render (pure code)"| wiki["wiki/<br/>generated Obsidian vault — never hand-edit"]
+    db -->|"wiki skill render"| skills[".claude/skills/<br/>executable skills"]
+    db -->|"wiki mcp serve"| mcp["MCP tools<br/>any client reads"]
 ```
 
 Knowledge is compiled once at ingest and maintained, never re-derived per query.

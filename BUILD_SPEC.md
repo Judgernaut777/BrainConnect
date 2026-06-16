@@ -10,8 +10,9 @@ criteria; do not begin a phase until the previous phase's criteria pass.
 
 A personal, compounding knowledge base with one direction of flow:
 
-```
-raw sources  →  SQLite DB (claims + context graph = truth)  →  Obsidian wiki (generated view)
+```mermaid
+flowchart LR
+    raw["raw sources"] --> db[("SQLite DB<br/>claims + context graph = truth")] --> wiki["Obsidian wiki<br/>(generated view)"]
 ```
 
 Knowledge is compiled once at ingest and maintained, never re-derived per query.
@@ -499,10 +500,11 @@ The brain can promote durable, **promoted** knowledge into Claude skills. A skil
 is a *third* one-way projection out of the DB, after the wiki — the
 `claims → pages` machinery aimed at a second output tree:
 
-```
-promoted claims (truth) --[in-session judgment]--> skills.body
-                        --[wiki skill render]----> .claude/skills/<name>/SKILL.md
-                        --[wiki skill install]---> ~/.claude/skills/<name>/  (opt-in)
+```mermaid
+flowchart LR
+    pc["promoted claims (truth)"] -->|"in-session judgment"| body["skills.body"]
+    body -->|"wiki skill render"| sk[".claude/skills/NAME/SKILL.md"]
+    sk -->|"wiki skill install (opt-in)"| glob["~/.claude/skills/NAME/"]
 ```
 
 **Why it's safe.** A skill is *instructions a future agent executes* — the inverse
@@ -566,10 +568,12 @@ the knowledge base to any MCP client (Claude Desktop, other harnesses) as
 first-class tools. This is the completion of "one door in, many projections out"
 — alongside the wiki and skills projections, a *read* projection of the DB.
 
-```
-                         ┌─ wiki render ──────→ wiki/ (Obsidian view)
-promoted/pending claims ─┼─ wiki skill render ─→ .claude/skills/ (executable)
-        (DB = truth)     └─ wiki mcp serve ────→ MCP tools (any client reads)
+```mermaid
+flowchart LR
+    db[("promoted / pending claims<br/>DB = truth")]
+    db -->|"wiki render"| wiki["wiki/ (Obsidian view)"]
+    db -->|"wiki skill render"| sk[".claude/skills/ (executable)"]
+    db -->|"wiki mcp serve"| mcp["MCP tools (any client reads)"]
 ```
 
 **Tools (stdio MCP).** All return JSON; all are pure code.
