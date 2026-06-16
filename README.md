@@ -5,7 +5,9 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Model calls in CLI: zero](https://img.shields.io/badge/CLI%20model%20calls-zero-success.svg)
 
-A personal, compounding knowledge base with one direction of flow:
+A personal, compounding, **agent-native** knowledge base. One SQLite database is
+the source of truth; everything else is a regenerable projection of it, rebuilt by
+pure code and never hand-edited:
 
 ```mermaid
 flowchart LR
@@ -30,8 +32,11 @@ flowchart TB
 ```
 
 Knowledge is compiled once at ingest and maintained, never re-derived per query.
-The wiki is always a regenerable projection of the database — humans and models
-change the DB, and the renderer rebuilds the pages. See **BUILD_SPEC.md** for the
+The database projects **three ways** — the **Obsidian wiki** to browse, **Claude
+skills** authored from promoted truth, and an **MCP server** any agent can query —
+each rebuilt from the DB, so humans and models change the DB, never the outputs.
+Provenance is rigorous: every source artifact is hash-verified, and nothing
+becomes truth except through a human-gated promotion. See **BUILD_SPEC.md** for the
 full design and **SCHEMA.md** for conventions.
 
 ## Design boundaries
@@ -42,6 +47,9 @@ full design and **SCHEMA.md** for conventions.
   are denied in `.claude/settings.json`.
 - The live DB lives at an absolute path outside the tree (default
   `~/.wiki-brain/wiki.db`) so scheduled-task worktrees share one truth.
+- **Provenance is enforced.** Every source artifact is hash-verified on the way
+  in and again whenever it's filed into `raw/<bucket>/<year>/`; only human-gated
+  `promoted` claims ever reach the wiki, the skills, or MCP results.
 - **Your knowledge stays local.** This is a code/design repo: `raw/`, `inbox/`,
   `wiki/`, `db/dump.sql`, `config.toml`, and `log.md` are git-ignored, so your
   actual notes never publish. Un-ignore them locally if you want a private repo
@@ -132,22 +140,43 @@ Offline harness covering phases 1–7 against a throwaway temp DB (never touches
 the live DB). Network paths (URL fetch, websearch, live bookmark fetch) and the
 live MCP stdio server (needs the `[mcp]` extra) are exercised separately.
 
-## Scheduled tasks (Claude Code Desktop)
-Desktop scheduled tasks are created via the **Routines** UI (there is no
-config-file way to create them). Create two, both with working folder = this
-repo and **Isolated worktree** ON:
+## Scheduled maintenance
+Maintenance splits in two: a **zero-model** half (bookmarks sync, gate, render,
+lint, health, commit) that is pure code, and a **judgment** half (claim
+extraction, synthesis, contradiction adjudication, skill drafting) that needs a
+model. Both stay key-free — pick the cadence that fits.
+
+**Hybrid — no Claude Desktop.** A plain Windows Task Scheduler job runs
+`scripts/mechanical-maintain.ps1` daily (the zero-model steps only, no Claude
+client), and you run the judgment half interactively via `/maintain` when
+convenient. The script commits locally and never pushes — you review the diff.
+Register it (runs whether or not you're logged on, no stored password):
+```powershell
+$repo = "C:\path\to\wiki-brain"
+Register-ScheduledTask -TaskName "wiki-brain mechanical maintain" `
+  -Action (New-ScheduledTaskAction -Execute powershell.exe `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\mechanical-maintain.ps1`"") `
+  -Trigger (New-ScheduledTaskTrigger -Daily -At 6:30am) `
+  -Principal (New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U) `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable)
+```
+
+**Fully autonomous — Claude Code Desktop Routines.** Created via the **Routines**
+UI (no config-file way). Two tasks, working folder = this repo, **Isolated
+worktree** ON:
 
 | Task | ~Time | Model | Instructions |
 |---|---|---|---|
 | `night-gather` | 02:00 daily | Haiku | `Follow .claude/skills/wiki-maintainer/gather.md exactly.` |
 | `morning-maintain` | 06:30 daily | Sonnet | `Follow .claude/skills/wiki-maintainer/maintain.md exactly.` |
 
-Worktree note: generated `wiki/` + `db/dump.sql` commit from the worktree branch;
-fast-forward to `main` on success (or do it during your morning review). The live
-DB is shared via its absolute path, so both tasks see the same truth.
+Generated `wiki/` + `db/dump.sql` commit from the worktree branch; fast-forward to
+`main` on success. The live DB is shared via its absolute path, so every task sees
+the same truth.
 
-Interactive fallback (identical procedure): run the morning pass yourself by
-telling Claude Code in this repo to *follow maintain.md*.
+> The MCP server can't run these itself — it's a passive tool host with no model.
+> The timer and zero-model steps need no Claude client (Task Scheduler handles
+> them), but the judgment half always needs a model-bearing client.
 
 ## Billing guardrails
 No API keys in repo/env/config. Leave overflow billing OFF in account settings.
