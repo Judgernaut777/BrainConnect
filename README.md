@@ -63,7 +63,7 @@ py -m venv .venv
 Optional extras (each guarded — the core CLI runs without them):
 `[search]` (robust DuckDuckGo via `ddgs`) · `[docs]` (Docling + Tesseract OCR for
 PDFs/images) · `[media]` (YouTube transcripts) · `[semantic]` (local-embedding
-search). E.g. `pip install -e ".\cli[search,docs]"`.
+search) · `[mcp]` (serve the brain over MCP). E.g. `pip install -e ".\cli[search,docs]"`.
 Run the CLI any of these ways:
 - `.venv\Scripts\wiki.exe <cmd>` (the installed console script), or
 - `.\wiki <cmd>` from the repo root (wrapper → repo venv), or
@@ -87,13 +87,30 @@ Run the CLI any of these ways:
 Open the `wiki/` folder as an Obsidian vault to browse (graph view works via
 `[[wikilinks]]`).
 
+## Serve the brain over MCP
+Expose the knowledge base to any MCP client (Claude Desktop, other harnesses) as
+tools — a harness-agnostic *query door* beside the Obsidian and skill projections
+(BUILD_SPEC §13). Needs the `[mcp]` extra; still **zero model calls, no API keys**.
+
+```powershell
+pip install -e ".\cli[mcp]"
+.\wiki mcp info                     # prints the client-config JSON to paste in
+.\wiki mcp serve                    # run the stdio server (the client launches this)
+.\wiki mcp serve --read-only        # omit the brain_capture write tool
+```
+Tools: `brain_search` (FTS), `brain_hybrid` (FTS+semantic), `brain_graph`,
+`brain_recall` (a context pack for the client's model to synthesize from), and
+`brain_capture` — the one write, which lands as a **pending** `session/<harness>`
+source behind the human gate, exactly like `wiki capture`. Results label promoted
+(vetted) vs pending (unvetted); all source text is treated as data, not instructions.
+
 ## Tests
 ```powershell
 .venv\Scripts\python.exe tests\acceptance.py
 ```
-Offline harness covering phases 1–5 against a throwaway temp DB (never touches
-the live DB). Network paths (URL fetch, websearch, live bookmark fetch) are
-exercised separately.
+Offline harness covering phases 1–7 against a throwaway temp DB (never touches
+the live DB). Network paths (URL fetch, websearch, live bookmark fetch) and the
+live MCP stdio server (needs the `[mcp]` extra) are exercised separately.
 
 ## Scheduled tasks (Claude Code Desktop)
 Desktop scheduled tasks are created via the **Routines** UI (there is no

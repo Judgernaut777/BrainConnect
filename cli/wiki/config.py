@@ -48,6 +48,10 @@ DEFAULTS = {
         "model": "sentence-transformers/all-MiniLM-L6-v2",
         "enabled": False,       # off by default; the [semantic] extra is heavy (torch)
     },
+    "mcp": {
+        "read_only": False,     # if True, `wiki mcp serve` omits the capture write tool
+        "recall_k": 8,          # default top-k claims returned by brain_recall
+    },
 }
 
 
@@ -121,3 +125,6 @@ class Config:
 
     def embed_cfg(self, key: str):
         return self.data["embed"].get(key)
+
+    def mcp_cfg(self, key: str):
+        return self.data["mcp"].get(key)

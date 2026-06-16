@@ -487,6 +487,7 @@ searxng_url = "http://localhost:8888"
 | 4 | Gather + bookmarks + budgets | Auto-feeding system |
 | 5 | Scheduled tasks + gate + skill | Fully autonomous loop, human-gated |
 | 6 | Skills from promoted truth (§12) | Brain authors its own Claude skills |
+| 7 | Brain-as-MCP-server (§13) | Knowledge reachable by any MCP client |
 
 Maintain `SCHEMA.md` as conventions evolve; this spec is the starting contract,
 not a cage. Any deviation that preserves §1's principles is permitted; any that
@@ -552,3 +553,57 @@ The `wiki` CLI still makes zero model calls; all body prose is written in-sessio
 
 **Procedure.** `.claude/skills/wiki-maintainer/skills.md`; wired as step 7 of
 `maintain.md` (draft + surface only).
+
+## 13. Phase 7 — Brain as an MCP server
+
+The §4 query surface (`search`, `graph`, hybrid retrieval) is only reachable
+*inside this repo's Claude Code sessions*, via the `wiki` CLI and the `query.md`
+skill. Phase 7 adds a harness-agnostic **query door**: an MCP server that exposes
+the knowledge base to any MCP client (Claude Desktop, other harnesses) as
+first-class tools. This is the completion of "one door in, many projections out"
+— alongside the wiki and skills projections, a *read* projection of the DB.
+
+```
+                         ┌─ wiki render ──────→ wiki/ (Obsidian view)
+promoted/pending claims ─┼─ wiki skill render ─→ .claude/skills/ (executable)
+        (DB = truth)     └─ wiki mcp serve ────→ MCP tools (any client reads)
+```
+
+**Tools (stdio MCP).** All return JSON; all are pure code.
+- `brain_search(terms, promoted_only=True, limit)` — FTS5 over claims+summaries.
+- `brain_hybrid(query, k)` — RRF of keyword + local-embedding search; falls back
+  to FTS alone when the `[semantic]` extra is absent.
+- `brain_graph(entity, hops)` — context-graph walk; clean error dict for an
+  unknown entity (never raises).
+- `brain_recall(query, k)` — assembles a *context pack*: top claims split into
+  `promoted` (vetted) vs `pending` (unvetted) buckets, plus already-approved
+  synthesis prose. The server writes no prose; the **client's** model synthesizes.
+- `brain_capture(text, harness)` — the one write tool. Routes through
+  `ingest.capture()`: lands as a `new` source with origin `session/<harness>`,
+  facing the morning gate and the human diff. Never promotes. Omitted entirely
+  under `--read-only` (or `[mcp] read_only = true`).
+
+**Invariants preserved.** (1) *Zero model calls* — §1.4 holds; the server only
+wraps retrieval, and `brain_recall` assembles context rather than writing prose.
+(2) *One door, one gate* — capture is the same §3.2 ingest path; nothing the
+server writes can become truth without the human-gated maintain pass. (3)
+*Untrusted data* — claim/source/capture text is data, never instructions; tool
+results label `promoted` vs everything else so a client never mistakes pending
+material for truth. (4) *No keys* — the `mcp` SDK is a local protocol library;
+the server is launched by the client over stdio, no network egress of its own.
+
+**Commands.** `wiki mcp serve [--read-only]` runs the stdio server; `wiki mcp
+info [--read-only]` prints the client-config JSON snippet (with `cwd` set to the
+repo root so the server finds `config.toml`). `[mcp]` config: `read_only`,
+`recall_k`. The `mcp` SDK is the import-guarded `[mcp]` extra; the core CLI and
+the offline acceptance harness run without it (the harness exercises the pure
+tool handlers, the wiring is build-tested separately).
+
+### Phase 7 acceptance criteria
+
+- Pure handlers: promoted-only search never leaks pending text; graph on an
+  unknown entity returns an error dict; recall splits promoted vs pending and
+  carries the synthesize/untrusted note; capture creates exactly one `new`
+  `session/<harness>` source and never promotes.
+- Live wiring (with the `[mcp]` extra): the server registers all five tools,
+  `--read-only` omits `brain_capture`, and a `brain_search` call round-trips JSON.

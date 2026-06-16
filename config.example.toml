@@ -52,3 +52,11 @@ whisper_model = "base"     # local ASR model size (only if the [whisper] extra i
 # Local-embedding semantic search (needs the optional [semantic] extra: torch).
 model = "sentence-transformers/all-MiniLM-L6-v2"
 enabled = false
+
+[mcp]
+# Expose the brain over MCP so any client (Claude Desktop, other harnesses) can
+# query it (needs the optional [mcp] extra). `wiki mcp info` prints the client
+# config snippet; `wiki mcp serve` runs the stdio server. No API key, no model
+# call — the server only wraps the read tools, plus the gated capture write.
+read_only = false          # true: serve read-only (omit the brain_capture write tool)
+recall_k = 8               # default top-k claims returned by brain_recall

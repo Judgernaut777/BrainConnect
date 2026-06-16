@@ -13,7 +13,7 @@ Stored on `sources.origin` and copied onto `claims.origin` at extraction time.
 | `clip` | human-curated clip / manual `wiki add` | trusted: bypasses corroboration |
 | `bookmark` | synced from a browser `wiki` folder | normal |
 | `autoresearch` | fetched by the night gather pass | machine: conf ceiling 0.9, never auto-supersedes |
-| `session/<harness>` | live capture from a session (e.g. `session/claude-code`) | machine: conf ceiling 0.9, never auto-supersedes |
+| `session/<harness>` | live capture from a session (e.g. `session/claude-code`, or `session/mcp` from a `brain_capture` MCP call) | machine: conf ceiling 0.9, never auto-supersedes |
 
 ## State machines
 - `sources.status`: `new` → `extracted` → (`failed` | `quarantined`). `new` =

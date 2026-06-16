@@ -12,7 +12,7 @@ from .db import Repo, init_db
 from . import (ingest, search as searchmod, queue as queuemod, render as rendermod,
                lint as lintmod, health as healthmod, gather, gate as gatemod,
                review, fetch as fetchmod, drop as dropmod, extract as extractmod,
-               embed as embedmod, skills as skillsmod)
+               embed as embedmod, skills as skillsmod, mcp_server as mcpmod)
 
 SCAFFOLD_DIRS = [
     "raw", "raw/assets", "inbox",
@@ -564,6 +564,28 @@ def _dispatch_skill(repo, args):
         print(f"uninstalled {args.name} (removed {dst})")
 
 
+# --- mcp server (Phase 7) ---------------------------------------------------
+def cmd_mcp(args):
+    # The --read-only flag forces it on; otherwise honor the [mcp] config default.
+    read_only = args.read_only or bool(Config.load().mcp_cfg("read_only"))
+    if args.mcmd == "serve":
+        try:
+            mcpmod.serve(read_only=read_only)
+        except mcpmod.McpUnavailable as e:
+            sys.exit(f"error: {e}")
+    elif args.mcmd == "info":
+        with Repo.open() as repo:
+            cfg = mcpmod.client_config(repo, read_only=read_only)
+        if _emit(cfg, getattr(args, "json", False)):
+            return
+        print("Add this to your MCP client config (e.g. Claude Desktop's "
+              "claude_desktop_config.json):\n")
+        print(json.dumps(cfg, indent=2))
+        print("\nThe server exposes read-only retrieval tools "
+              "(brain_search/hybrid/graph/recall)"
+              + ("." if read_only else " plus brain_capture (gated write)."))
+
+
 # --- parser -----------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="wiki", description="wiki-brain CLI (no model calls)")
@@ -717,6 +739,18 @@ def build_parser() -> argparse.ArgumentParser:
     ki.add_argument("name")
     ku = ksub.add_parser("uninstall"); ku.add_argument("name")
     sk.set_defaults(func=cmd_skill)
+
+    # mcp: expose the brain as an MCP server (Phase 7)
+    smc = sub.add_parser("mcp", help="serve the brain over MCP (query door)")
+    mcsub = smc.add_subparsers(dest="mcmd", required=True)
+    mcserve = mcsub.add_parser("serve", help="run the stdio MCP server")
+    mcserve.add_argument("--read-only", action="store_true",
+                         help="disable the brain_capture write tool")
+    mcinfo = mcsub.add_parser("info", help="print MCP client config snippet")
+    mcinfo.add_argument("--read-only", action="store_true",
+                        help="emit a config for a read-only server")
+    addj(mcinfo)
+    smc.set_defaults(func=cmd_mcp)
 
     return p
 

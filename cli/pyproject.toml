@@ -16,6 +16,7 @@ docs = ["docling>=2.0", "rapidocr>=2", "onnxruntime>=1.17", "pillow>=10", "pytes
 media = ["youtube-transcript-api>=0.6"]                         # video captions
 whisper = ["faster-whisper>=1.0"]                               # local ASR (needs ffmpeg)
 semantic = ["sentence-transformers>=3", "numpy>=1.26"]          # local embeddings
+mcp = ["mcp>=1.2"]                                             # expose the brain as an MCP server (no API key, no model call)
 
 [project.scripts]
 wiki = "wiki.cli:main"

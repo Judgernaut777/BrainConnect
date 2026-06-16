@@ -48,6 +48,8 @@ Gate/review: `wiki gate` · `wiki promote <ids>` · `wiki reject <ids>` ·
 Skills: `wiki skill suggest` · `wiki skill new|set|get|list|lint` ·
 `wiki skill audit` (drift+redundancy) · `wiki skill merge` · `wiki skill
 versions|diff|revert` (rollback) · `wiki skill approve` (human gate) · `wiki skill install`
+MCP: `wiki mcp info [--read-only]` (print client config) · `wiki mcp serve
+[--read-only]` (stdio server exposing brain_search/hybrid/graph/recall + gated brain_capture)
 
 ## Extraction JSON contract (for `wiki file-claims`)
 ```json

@@ -24,7 +24,7 @@ from wiki import (ingest, search as searchmod, queue as queuemod,            # n
                   render as rendermod, lint as lintmod, health as healthmod,
                   review, gate as gatemod, gather, fetch as fetchmod,
                   migrate as migratemod, schema as schemamod, drop as dropmod,
-                  skills as skillsmod)
+                  skills as skillsmod, mcp_server as mcpmod)
 
 PASS, FAIL = 0, 0
 
@@ -742,6 +742,65 @@ def main():
             merge_blocked = True
         check("merge refused while source is installed", merge_blocked)
         r.ex("UPDATE skills SET installed=0 WHERE name='ver-keep'"); r.conn.commit()
+
+    # ---------------- Phase 7: brain-as-MCP-server (pure handlers) ----------
+    # The mcp SDK is an optional extra; the offline harness exercises the pure
+    # tool handlers (which it does not depend on), not a live stdio server.
+    print("[Phase 7] MCP server tool handlers")
+    with Repo.open(start=root) as r:
+        promoted = [row["id"] for row in r.q(
+            "SELECT id FROM claims WHERE status='promoted' ORDER BY id LIMIT 1")]
+        check("have a promoted claim to retrieve", len(promoted) >= 1)
+        ptext = r.one("SELECT text FROM claims WHERE id=?", (promoted[0],))["text"]
+        term = next((w for w in ptext.split() if len(w) > 4), "the")
+
+        # search: promoted-only is the safe default and never leaks pending text
+        res = mcpmod.tool_search(r, term, promoted_only=True)
+        check("search returns JSON-able dict with results list",
+              isinstance(res, dict) and isinstance(res.get("results"), list))
+        check("promoted-only search yields only promoted claims",
+              all(x.get("status") == "promoted"
+                  for x in res["results"] if x.get("kind") == "claim"))
+
+        # graph: unknown entity returns a clean error dict, never raises
+        g = mcpmod.tool_graph(r, "no-such-entity-xyz", hops=1)
+        check("graph on unknown entity returns error dict, not exception",
+              isinstance(g, dict) and "error" in g)
+
+        # hybrid: falls back to FTS when the [semantic] extra is absent
+        hy = mcpmod.tool_hybrid(r, term, k=5)
+        check("hybrid returns a mode and a results list",
+              hy.get("mode") in ("hybrid", "fts") and isinstance(hy["results"], list))
+
+        # recall: assembles a context pack split into promoted vs pending; the
+        # server writes no prose (the note steers the client to synthesize).
+        rec = mcpmod.tool_recall(r, term, k=5)
+        check("recall splits promoted vs pending", "promoted" in rec and "pending" in rec)
+        check("recall promoted bucket holds only promoted claims",
+              all(x.get("status") == "promoted" for x in rec["promoted"]))
+        check("recall carries an untrusted-data / synthesize note",
+              "instructions" in rec["note"] and "pending" in rec["note"])
+
+        # capture: the one write door routes through ingest.capture -> a NEW
+        # source with origin session/<harness>, never promoted.
+        before = r.one("SELECT COUNT(*) n FROM sources")["n"]
+        cap = mcpmod.tool_capture(r, "Phase 7 MCP test finding.", harness="mcp")
+        after = r.one("SELECT COUNT(*) n FROM sources")["n"]
+        check("capture registers exactly one new source", after == before + 1)
+        srow = r.one("SELECT origin, status FROM sources WHERE id=?", (cap["source_id"],))
+        check("captured source has origin session/mcp", srow["origin"] == "session/mcp")
+        check("captured source is new (unvetted), not promoted", srow["status"] == "new")
+        check("capture harness label is sanitized",
+              mcpmod.tool_capture(r, "x", harness="../evil!")["origin"]
+              .startswith("session/"))
+
+        # client config snippet is well-formed and points at the repo root
+        cc = mcpmod.client_config(r, read_only=True)
+        srv = cc["mcpServers"]["wiki-brain"]
+        check("client config targets `wiki mcp serve`",
+              srv["command"] == "wiki" and srv["args"][:2] == ["mcp", "serve"])
+        check("read-only client config carries --read-only",
+              "--read-only" in srv["args"])
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
