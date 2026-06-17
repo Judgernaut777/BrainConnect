@@ -16,7 +16,7 @@ flowchart LR
 
 **Key-free by default.** The CLI does pure-code structure (ingest, render, search,
 budgeted fetch) with **zero billable LLM calls and no API keys** — judgment lives
-in your Claude Code sessions, which read content and emit structured claims. An
+in your agent/model sessions, which read content and emit structured claims. An
 optional *premium research tier* (Firecrawl / mcp-omnisearch) can be layered in at
 the session level, with its keys held outside this repo, so the project itself
 stays secret-free (`wiki lint` enforces it).
@@ -25,14 +25,14 @@ stays secret-free (`wiki lint` enforces it).
 flowchart TB
     src["bookmarks · web pages<br/>PDFs / images · session captures"]
     src -->|"one door<br/>wiki add · capture · drop · transcribe"| raw[("raw/")]
-    raw -->|"model judgment — Claude sessions<br/>night = gather (Haiku) · morning = maintain (Sonnet)"| db[("SQLite DB<br/>claims + entities + context = truth")]
+    raw -->|"model judgment — your agent session<br/>cheap model nightly · stronger model for maintain"| db[("SQLite DB<br/>claims + entities + context = truth")]
     db -->|"wiki render (pure code)"| wiki["wiki/<br/>generated Obsidian vault — never hand-edit"]
-    db -->|"wiki skill render"| skills[".claude/skills/<br/>executable skills"]
+    db -->|"wiki skill render"| skills["agent skills<br/>(.claude/skills/)"]
     db -->|"wiki mcp serve"| mcp["MCP tools<br/>any client reads"]
 ```
 
 Knowledge is compiled once at ingest and maintained, never re-derived per query.
-The database projects **three ways** — the **Obsidian wiki** to browse, **Claude
+The database projects **three ways** — the **Obsidian wiki** to browse, **agent
 skills** authored from promoted truth, and an **MCP server** any agent can query —
 each rebuilt from the DB, so humans and models change the DB, never the outputs.
 Provenance is rigorous: every source artifact is hash-verified, and nothing
@@ -41,10 +41,10 @@ full design and **SCHEMA.md** for conventions.
 
 ## Design boundaries
 - The `wiki` CLI contains **zero model calls** (a billing + determinism
-  boundary). All judgment happens inside Claude Code sessions (see the
-  `wiki-maintainer` skill).
-- **Subscription only.** No API keys anywhere; `claude -p` / headless children
-  are denied in `.claude/settings.json`.
+  boundary). All judgment happens inside your agent/model session (the
+  `wiki-maintainer` maintenance procedures).
+- **Key-free.** No API keys anywhere in the project; headless model children are
+  denied in settings, so model work only happens in an interactive agent session.
 - The live DB lives at an absolute path outside the tree (default
   `~/.wiki-brain/wiki.db`) so scheduled-task worktrees share one truth.
 - **Provenance is enforced.** Every source artifact is hash-verified on the way
@@ -54,6 +54,13 @@ full design and **SCHEMA.md** for conventions.
   `wiki/`, `db/dump.sql`, `config.toml`, and `log.md` are git-ignored, so your
   actual notes never publish. Un-ignore them locally if you want a private repo
   that versions your knowledge too.
+
+> **Harness-neutral, MCP-first.** The CLI is pure code and the MCP server works
+> with any MCP client, so any agent can ingest, query, and maintain the brain.
+> Two touchpoints are specific to the reference harness used for the judgment
+> passes today (Claude Code): authored skills render to `.claude/skills/` (its
+> skill directory), and the key-free boundary denies headless model children
+> (e.g. `claude -p`) in `.claude/settings.json`. Swap in any MCP-capable agent.
 
 ## Setup
 ```powershell
@@ -83,7 +90,7 @@ Run the CLI any of these ways:
 .\wiki drop                                             # ingest files from the drop folder
 .\wiki transcribe https://youtu.be/VIDEO_ID            # ingest a video's captions
 .\wiki pending                                          # what needs extraction
-# (a model produces extraction JSON per the contract in the skill)
+# (your agent produces extraction JSON per the contract in the docs)
 .\wiki file-claims --source 1 --json extract.json
 # accepted extraction auto-files the raw artifact into raw/<bucket>/<year>/
 # and refreshes raw/INDEX.md so primary evidence remains easy to pull
@@ -116,7 +123,7 @@ Backfill or repair existing evidence with:
 ```
 
 ## Serve the brain over MCP
-Expose the knowledge base to any MCP client (Claude Desktop, other harnesses) as
+Expose the knowledge base to any MCP client (any agent or harness) as
 tools — a harness-agnostic *query door* beside the Obsidian and skill projections
 (BUILD_SPEC §13). Needs the `[mcp]` extra; still **zero model calls, no API keys**.
 
@@ -146,10 +153,11 @@ lint, health, commit) that is pure code, and a **judgment** half (claim
 extraction, synthesis, contradiction adjudication, skill drafting) that needs a
 model. Both stay key-free — pick the cadence that fits.
 
-**Hybrid — no Claude Desktop.** A plain Windows Task Scheduler job runs
-`scripts/mechanical-maintain.ps1` daily (the zero-model steps only, no Claude
-client), and you run the judgment half interactively via `/maintain` when
-convenient. The script commits locally and never pushes — you review the diff.
+**Hybrid — no agent for the mechanical half.** A plain Windows Task Scheduler job
+runs `scripts/mechanical-maintain.ps1` daily (the zero-model steps only, no agent
+at all), and you run the judgment half interactively in your agent (the
+`maintain.md` procedure) when convenient. The script commits locally and never
+pushes — you review the diff.
 Register it (runs whether or not you're logged on, no stored password):
 ```powershell
 $repo = "C:\path\to\wiki-brain"
@@ -161,28 +169,29 @@ Register-ScheduledTask -TaskName "wiki-brain mechanical maintain" `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable)
 ```
 
-**Fully autonomous — Claude Code Desktop Routines.** Created via the **Routines**
-UI (no config-file way). Two tasks, working folder = this repo, **Isolated
-worktree** ON:
+**Fully autonomous — a scheduled agent runner.** Point any agent that supports
+cron/scheduled runs at the two maintenance procedures (working folder = this repo;
+isolated worktree if supported). Use a cheaper model for the nightly pass and a
+stronger one for the morning pass:
 
-| Task | ~Time | Model | Instructions |
+| Task | ~Time | Model | Procedure |
 |---|---|---|---|
-| `night-gather` | 02:00 daily | Haiku | `Follow .claude/skills/wiki-maintainer/gather.md exactly.` |
-| `morning-maintain` | 06:30 daily | Sonnet | `Follow .claude/skills/wiki-maintainer/maintain.md exactly.` |
+| `night-gather` | 02:00 daily | cheaper | `Follow .claude/skills/wiki-maintainer/gather.md exactly.` |
+| `morning-maintain` | 06:30 daily | stronger | `Follow .claude/skills/wiki-maintainer/maintain.md exactly.` |
 
 Generated `wiki/` + `db/dump.sql` commit from the worktree branch; fast-forward to
 `main` on success. The live DB is shared via its absolute path, so every task sees
 the same truth.
 
 > The MCP server can't run these itself — it's a passive tool host with no model.
-> The timer and zero-model steps need no Claude client (Task Scheduler handles
-> them), but the judgment half always needs a model-bearing client.
+> The timer and zero-model steps need no agent (Task Scheduler handles them), but
+> the judgment half always needs a model-bearing client.
 
-## Billing guardrails
-No API keys in repo/env/config. Leave overflow billing OFF in account settings.
-After running the tasks for a few days, check the account usage page — expect
-zero Agent SDK credit consumed. If credit IS drawn, disable the tasks and fall
-back to the interactive maintain pass. (BUILD_SPEC §10.)
+## Cost & keys
+The project holds **no API keys** and the CLI makes **no model calls**, so the
+repo itself incurs no model spend. Any model cost comes only from the agent
+session you choose to run the judgment passes — outside this repo, under whatever
+provider or subscription you use. (BUILD_SPEC §10.)
 
 ## Acknowledgments
 wiki-brain builds on ideas from others:
