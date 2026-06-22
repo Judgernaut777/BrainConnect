@@ -193,6 +193,44 @@ repo itself incurs no model spend. Any model cost comes only from the agent
 session you choose to run the judgment passes — outside this repo, under whatever
 provider or subscription you use. (BUILD_SPEC §10.)
 
+## Using with Claude Code (the reference harness)
+wiki-brain is harness-neutral, but **Claude Code** is the reference harness it was
+built and tested against: it runs the judgment passes, and the brain's own
+`wiki-maintainer` skill lives in `.claude/skills/`. If you drive it with Claude
+Code, this is the concrete setup — and the project's original key-free, subscription-only posture.
+
+**The skill.** `.claude/skills/wiki-maintainer/` holds the procedures the model
+follows: `gather.md` (night), `maintain.md` (morning / `/maintain`), `capture.md`
+(when to call `wiki capture`), `query.md` (answer from the base), and `skills.md`
+(author skills from promoted truth). `CLAUDE.md` and `AGENTS.md` are thin pointers to it.
+
+**Subscription-only, no metered API** (BUILD_SPEC §1.5, §10). No API keys exist
+anywhere, and `claude -p` / `claude --print` / other headless children are denied
+in `.claude/settings.json` — all model work happens inside interactive or
+scheduled Claude Code sessions, on the subscription, never the metered API. After
+a few days of scheduled runs, check the account usage page; expect **zero
+Agent-SDK credit** drawn. If credit *is* drawn, disable the tasks and fall back to
+interactive `/maintain`.
+
+**Scheduled Routines.** Two Desktop scheduled tasks via the **Routines** UI
+(working folder = this repo, **Isolated worktree** ON):
+
+| Routine | ~Time | Model | Prompt |
+|---|---|---|---|
+| `night-gather` | 02:00 daily | **Haiku** | `Follow .claude/skills/wiki-maintainer/gather.md exactly.` |
+| `morning-maintain` | 06:30 daily | **Sonnet** | `Follow .claude/skills/wiki-maintainer/maintain.md exactly.` |
+
+Haiku does the cheap night gather; Sonnet does the gated morning maintain.
+
+**Authored skills.** `wiki skill approve` renders a skill from promoted claims to
+`.claude/skills/<name>/`; `wiki skill install` copies it to `~/.claude/skills/` so
+it's active in every Claude Code session. Both are human-gated.
+
+**Live capture & MCP.** In any Claude Code session in this repo, call
+`wiki capture --origin claude-code "<finding>"` to file a durable finding (it
+enters as pending, faces the morning gate). To wire the brain into Claude Desktop
+as an MCP client, `wiki mcp info` prints the snippet for `claude_desktop_config.json`.
+
 ## Acknowledgments
 wiki-brain builds on ideas from others:
 
