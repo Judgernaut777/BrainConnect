@@ -60,7 +60,9 @@ full design and **SCHEMA.md** for conventions.
 > Two touchpoints are specific to the reference harness used for the judgment
 > passes today (Claude Code): authored skills render to `.claude/skills/` (its
 > skill directory), and the key-free boundary denies headless model children
-> (e.g. `claude -p`) in `.claude/settings.json`. Swap in any MCP-capable agent.
+> (e.g. `claude -p`) in `.claude/settings.json`. Swap in any MCP-capable agent —
+> or see [Using with Claude Code](#using-with-claude-code-the-reference-harness)
+> for the concrete reference setup.
 
 ## Setup
 ```powershell
