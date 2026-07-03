@@ -213,7 +213,8 @@ def cmd_search(args):
             elif args.hybrid:
                 res = embedmod.hybrid_search(repo, terms, promoted_only=args.promoted_only)
             else:
-                res = searchmod.search(repo, terms, promoted_only=args.promoted_only)
+                res = searchmod.search(repo, terms, promoted_only=args.promoted_only,
+                                        limit=args.limit)
         except embedmod.EmbedError as e:
             sys.exit(f"error: {e}")
         if _emit(res, args.json):
@@ -705,6 +706,7 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--promoted-only", action="store_true")
     ss.add_argument("--semantic", action="store_true", help="local-embedding search")
     ss.add_argument("--hybrid", action="store_true", help="merge keyword + semantic (RRF)")
+    ss.add_argument("--limit", type=int, default=20, help="max results per kind (default 20)")
     addj(ss)
     ss.set_defaults(func=cmd_search)
 

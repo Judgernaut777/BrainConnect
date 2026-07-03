@@ -473,10 +473,10 @@ def render(repo: Repo, all_pages: bool = False) -> dict:
     report = {"rendered": [], "needs_synthesis_review": [], "fresh": [], "changed": created_or_deleted}
 
     for page in rows:
-        if not all_pages and not page["dirty"] and not created_or_deleted:
-            # still must render dependent pages flagged dirty; skip clean ones
-            if not page["dirty"]:
-                continue
+        # work set: dirty pages, plus the index (always refreshed here so it
+        # reflects the current page set even when nothing else is dirty).
+        if not all_pages and not page["dirty"] and page["kind"] != "index":
+            continue
         if page["kind"] in ("entity", "concept"):
             content, cur_hash, _ = _render_entity(repo, page)
             stored = page["synthesis_input_hash"]

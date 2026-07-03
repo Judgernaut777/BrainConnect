@@ -8,7 +8,8 @@ from .entities import find_entity
 from . import util
 
 
-def search(repo: Repo, terms: str, *, promoted_only: bool = False) -> list[dict]:
+def search(repo: Repo, terms: str, *, promoted_only: bool = False,
+           limit: int = 20) -> list[dict]:
     q = util.fts_query(terms)
     results: list[dict] = []
 
@@ -22,8 +23,8 @@ def search(repo: Repo, terms: str, *, promoted_only: bool = False) -> list[dict]
     """
     if promoted_only:
         claim_sql += " AND c.status = 'promoted'"
-    claim_sql += " ORDER BY c.id"
-    for r in repo.q(claim_sql, (q,)):
+    claim_sql += " ORDER BY bm25(claims_fts) LIMIT ?"
+    for r in repo.q(claim_sql, (q, limit)):
         results.append({
             "kind": "claim", "id": r["id"], "text": r["text"],
             "status": r["status"], "origin": r["origin"],
@@ -42,8 +43,8 @@ def search(repo: Repo, terms: str, *, promoted_only: bool = False) -> list[dict]
     """
     if promoted_only:
         sum_sql += " AND su.status = 'promoted'"
-    sum_sql += " ORDER BY su.id"
-    for r in repo.q(sum_sql, (q,)):
+    sum_sql += " ORDER BY bm25(summaries_fts) LIMIT ?"
+    for r in repo.q(sum_sql, (q, limit)):
         snippet = r["text"]
         if len(snippet) > 200:
             snippet = snippet[:200] + "…"

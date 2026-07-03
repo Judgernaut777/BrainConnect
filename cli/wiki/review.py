@@ -15,9 +15,22 @@ def _require_claim(repo: Repo, cid: int):
     return row
 
 
+# State-transition guards: a claim already settled by supersede (or already
+# rejected) may not be silently re-promoted, and a superseded claim — which
+# already has a replacement of record — may not be re-rejected either. The
+# common pending->promoted / pending->rejected paths stay open, as does
+# promoted->rejected (reviewers walking back a promotion).
+_PROMOTE_BLOCKED_FROM = {"rejected", "superseded"}
+_REJECT_BLOCKED_FROM = {"superseded"}
+
+
 def promote(repo: Repo, cids: list[int]) -> None:
     for cid in cids:
-        _require_claim(repo, cid)
+        row = _require_claim(repo, cid)
+        if row["status"] in _PROMOTE_BLOCKED_FROM:
+            raise SystemExit(
+                f"error: claim #{cid} is {row['status']}; cannot promote "
+                "(use supersede for superseded claims)")
         repo.ex("UPDATE claims SET status='promoted', reviewed_at=? WHERE id=?",
                 (util.now_iso(), cid))
         render.mark_dirty_for_claim(repo, cid)
@@ -26,7 +39,9 @@ def promote(repo: Repo, cids: list[int]) -> None:
 
 def reject(repo: Repo, cids: list[int]) -> None:
     for cid in cids:
-        _require_claim(repo, cid)
+        row = _require_claim(repo, cid)
+        if row["status"] in _REJECT_BLOCKED_FROM:
+            raise SystemExit(f"error: claim #{cid} is {row['status']}; cannot reject")
         repo.ex("UPDATE claims SET status='rejected', reviewed_at=? WHERE id=?",
                 (util.now_iso(), cid))
         render.mark_dirty_for_claim(repo, cid)

@@ -11,6 +11,7 @@ budget ledger). Exits non-zero on first failure.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli"))
 
 from wiki.db import Repo, init_db          # noqa: E402
+from wiki.cli import build_parser          # noqa: E402
 from wiki import (ingest, search as searchmod, queue as queuemod,            # noqa: E402
                   render as rendermod, lint as lintmod, health as healthmod,
                   review, gate as gatemod, gather, fetch as fetchmod,
@@ -1285,6 +1287,126 @@ def main():
                                "The cache is enabled by default now.") is False)
     check("polarity_conflict ignores dissimilar texts regardless of polarity",
           _u.polarity_conflict("The cache is enabled.", "Totally unrelated statement.") is False)
+
+    # ---------------- Group B: render dirty-set, search relevance, review guards --
+    print("[group-b #14] render() only rebuilds dirty pages + index (no over-render)")
+    groot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-groupb-render-")))
+    write(groot / "gb1.md", "Alpha source content.")
+    write(groot / "gb2.md", "Beta source content.")
+    with Repo.open(start=groot) as r:
+        gs1, _ = ingest.add(r, str(groot / "gb1.md"), origin="clip", title="gb1")
+        gj1 = {"source_id": gs1, "summary": "s1", "claims": [
+            {"text": "Alpha is a widget.", "confidence": 0.9,
+             "entities": ["Alpha"], "relations": []}], "low_confidence": False}
+        ingest.file_claims_data(r, gs1, gj1)
+        acid = r.one("SELECT id FROM claims WHERE source_id=?", (gs1,))["id"]
+        review.promote(r, [acid])
+        rendermod.render(r, all_pages=True)
+    alpha_page = groot / "wiki" / "concepts" / "alpha.md"
+    check("group-b setup: alpha page rendered", alpha_page.exists())
+    alpha_bytes = alpha_page.read_bytes()
+
+    with Repo.open(start=groot) as r:
+        gs2, _ = ingest.add(r, str(groot / "gb2.md"), origin="clip", title="gb2")
+        gj2 = {"source_id": gs2, "summary": "s2", "claims": [
+            {"text": "Beta is a gadget.", "confidence": 0.9,
+             "entities": ["Beta"], "relations": []}], "low_confidence": False}
+        ingest.file_claims_data(r, gs2, gj2)
+        bcid = r.one("SELECT id FROM claims WHERE source_id=?", (gs2,))["id"]
+        review.promote(r, [bcid])
+        rep2 = rendermod.render(r)
+    check("adding a second source does NOT re-render an unrelated clean entity page",
+          "wiki/concepts/alpha.md" not in rep2["rendered"])
+    check("the unrelated entity page's bytes are unchanged on disk",
+          alpha_page.read_bytes() == alpha_bytes)
+    check("the newly-dirty entity page IS rendered",
+          "wiki/concepts/beta.md" in rep2["rendered"])
+    check("the index is still refreshed alongside the dirty page",
+          "wiki/index.md" in rep2["rendered"])
+
+    print("[group-b search] bm25 relevance ordering + limit")
+    sroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-groupb-search-")))
+    with Repo.open(start=sroot) as r:
+        r.ex("INSERT INTO sources(hash, path, title, origin, status) "
+             "VALUES ('gbh1','gbp1','gbt1','clip','extracted')")
+        ssid = r.one("SELECT id FROM sources")["id"]
+        for t in ["widget widget widget widget appears many times",
+                  "widget appears once here",
+                  "widget widget appears twice here",
+                  "totally unrelated content about gizmos"]:
+            r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
+                 "VALUES (?, ?, 0.9, 'clip', 'pending', '2026-01-01T00:00:00Z')", (t, ssid))
+        r.conn.commit()
+        limited = searchmod.search(r, "widget", limit=2)
+        unlimited = searchmod.search(r, "widget", limit=20)
+    check("search limit caps result count", len(limited) == 2)
+    check("search finds all 3 matching claims when limit allows",
+          len(unlimited) == 3)
+    check("search orders claims by bm25 relevance (most matches first)",
+          limited[0]["text"].startswith("widget widget widget widget"))
+    check("search default limit is 20", inspect.signature(searchmod.search).parameters["limit"].default == 20)
+    sparser = build_parser()
+    sargs = sparser.parse_args(["search", "widget", "--limit", "5"])
+    check("--limit flag threaded through the search subcommand", sargs.limit == 5)
+    sargs_default = sparser.parse_args(["search", "widget"])
+    check("--limit defaults to 20 on the CLI", sargs_default.limit == 20)
+
+    print("[group-b review-guards] promote/reject refuse invalid state transitions")
+    vroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-groupb-guards-")))
+    with Repo.open(start=vroot) as r:
+        r.ex("INSERT INTO sources(hash, path, title, origin, status) "
+             "VALUES ('gbh2','gbp2','gbt2','clip','extracted')")
+        vsid = r.one("SELECT id FROM sources")["id"]
+        r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
+             "VALUES ('rej', ?, 0.9, 'clip', 'rejected', '2026-01-01T00:00:00Z')", (vsid,))
+        r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
+             "VALUES ('sup', ?, 0.9, 'clip', 'superseded', '2026-01-01T00:00:00Z')", (vsid,))
+        r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
+             "VALUES ('pend', ?, 0.9, 'clip', 'pending', '2026-01-01T00:00:00Z')", (vsid,))
+        r.conn.commit()
+        rej_id = r.one("SELECT id FROM claims WHERE text='rej'")["id"]
+        sup_id = r.one("SELECT id FROM claims WHERE text='sup'")["id"]
+        pend_id = r.one("SELECT id FROM claims WHERE text='pend'")["id"]
+
+    rej_promote_blocked = False
+    try:
+        with Repo.open(start=vroot) as r:
+            review.promote(r, [rej_id])
+    except SystemExit:
+        rej_promote_blocked = True
+    check("promoting an already-rejected claim is refused", rej_promote_blocked)
+
+    sup_promote_blocked = False
+    try:
+        with Repo.open(start=vroot) as r:
+            review.promote(r, [sup_id])
+    except SystemExit:
+        sup_promote_blocked = True
+    check("promoting a superseded claim is refused", sup_promote_blocked)
+
+    sup_reject_blocked = False
+    try:
+        with Repo.open(start=vroot) as r:
+            review.reject(r, [sup_id])
+    except SystemExit:
+        sup_reject_blocked = True
+    check("rejecting a superseded claim is refused", sup_reject_blocked)
+
+    with Repo.open(start=vroot) as r:
+        s_before = r.one("SELECT status FROM claims WHERE id=?", (sup_id,))["status"]
+    check("a refused promote/reject leaves the claim's status untouched",
+          s_before == "superseded")
+
+    with Repo.open(start=vroot) as r:
+        review.promote(r, [pend_id])
+        pend_status = r.one("SELECT status FROM claims WHERE id=?", (pend_id,))["status"]
+    check("the common pending->promoted path still works", pend_status == "promoted")
+
+    with Repo.open(start=vroot) as r:
+        review.reject(r, [pend_id])
+        pend_status2 = r.one("SELECT status FROM claims WHERE id=?", (pend_id,))["status"]
+    check("the common promoted->rejected path (walking back a promotion) still works",
+          pend_status2 == "rejected")
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
