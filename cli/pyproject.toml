@@ -20,10 +20,16 @@ mcp = ["mcp>=1.2"]                                             # expose the brai
 
 [project.scripts]
 wiki = "wiki.cli:main"
+# The librarian is the model-BEARING half — a separate console script and a
+# separate process, so `wiki` above keeps its zero-model-call guarantee. It
+# speaks the OpenAI-compatible chat API over stdlib http, so it has no required
+# dependency; configure an endpoint (local Ollama/LM Studio or a hosted key) in
+# [librarian] in config.toml.
+wiki-librarian = "librarian.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["wiki"]
+packages = ["wiki", "librarian"]

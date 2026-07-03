@@ -242,13 +242,19 @@ def _detect_contradictions(repo: Repo, new_claim_id: int, text: str) -> int:
 
 
 def file_claims(repo: Repo, source_id: int, json_path: str) -> dict:
-    src = repo.one("SELECT * FROM sources WHERE id = ?", (source_id,))
-    if not src:
-        raise IngestError(f"no source #{source_id}")
     try:
         data = json.loads(Path(json_path).read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise IngestError(f"extraction JSON is not valid JSON: {e}")
+    return file_claims_data(repo, source_id, data)
+
+
+def file_claims_data(repo: Repo, source_id: int, data: dict) -> dict:
+    """File an already-parsed extraction object. Entry point for the librarian
+    (which holds a dict, not a file); `file_claims` wraps it for the CLI path."""
+    src = repo.one("SELECT * FROM sources WHERE id = ?", (source_id,))
+    if not src:
+        raise IngestError(f"no source #{source_id}")
     _validate(data, source_id)
 
     origin = src["origin"]

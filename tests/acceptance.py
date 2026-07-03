@@ -893,6 +893,105 @@ def main():
         check("read-only client config carries --read-only",
               "--read-only" in srv["args"])
 
+    # ---------------- Librarian (event-driven judgment, model stubbed) --------
+    print("[librarian] extraction pass with a stubbed OpenAI-compatible model")
+    from librarian.config import LibrarianConfig
+    from librarian import client as libclient, extract as libextract
+
+    lib_root = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-lib-")))
+    # Give this repo a librarian config so model_for()/api_key() resolve.
+    write(lib_root / "config.toml",
+          (lib_root / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub/model"\nbase_url = "http://stub/v1"\n')
+    lcfg = LibrarianConfig.load(start=lib_root)
+    check("librarian config reads [librarian] model", lcfg.model_for("extract") == "stub/model")
+    check("librarian model_for falls back to default when no per-task override",
+          lcfg.model_for("adjudicate") == "stub/model")
+    check("librarian api_key None when api_key_env unset", lcfg.api_key() is None)
+
+    # A canned extraction the stub will "return". Note the deliberately wrong
+    # source_id echo — the librarian must overwrite it with the real one.
+    canned = {
+        "source_id": 999,
+        "summary": "A note about caching in HTTP.",
+        "claims": [
+            {"text": "HTTP caching reduces server load by reusing responses.",
+             "confidence": 0.95, "entities": ["HTTP caching", "HTTP"],
+             "relations": [{"src": "HTTP caching", "rel": "reduces", "dst": "server load"}]},
+            {"text": "A cache stores a copy of a response keyed by its request.",
+             "confidence": 0.9, "entities": ["cache"]},
+        ],
+        "low_confidence": False,
+        "proposed_questions": ["What is the default cache TTL?"],
+    }
+
+    calls = {"n": 0}
+
+    def _stub_transport(url, payload, headers, timeout):
+        calls["n"] += 1
+        # echo the OpenAI chat-completions envelope shape the client expects
+        return {"choices": [{"message": {
+            "content": json.dumps(canned)}}]}
+
+    orig_transport = libclient._post_json
+    libclient._post_json = _stub_transport
+    try:
+        # capture is the simplest one-door ingest (no network/file prep needed).
+        with Repo.open(start=lib_root) as r:
+            cap_sid = ingest.capture(r, "test", "seed source about HTTP caching")
+        with Repo.open(start=lib_root) as r:
+            rep = libextract.run_one(r, lcfg, cap_sid)
+        check("librarian made exactly one model call", calls["n"] == 1)
+        check("librarian filed the claims from the model", rep["claims"] == 2)
+        with Repo.open(start=lib_root) as r:
+            src = r.one("SELECT status FROM sources WHERE id=?", (cap_sid,))
+            n_claims = r.one("SELECT COUNT(*) n FROM claims WHERE source_id=?", (cap_sid,))["n"]
+        check("source is marked extracted after librarian pass", src["status"] == "extracted")
+        check("claims were attached to the REAL source id (echo ignored)", n_claims == 2)
+
+        # Idempotency: a second run_one on the same (now 'extracted') source must
+        # refuse rather than double-file — the bug fix that makes on-ingest safe.
+        refused = False
+        try:
+            with Repo.open(start=lib_root) as r:
+                libextract.run_one(r, lcfg, cap_sid)
+        except libextract.ExtractionFailed:
+            refused = True
+        check("librarian refuses to re-extract an already-extracted source", refused)
+        with Repo.open(start=lib_root) as r:
+            n2 = r.one("SELECT COUNT(*) n FROM claims WHERE source_id=?", (cap_sid,))["n"]
+        check("refused re-extract did not add duplicate claims", n2 == 2)
+
+        # catch-up drains a backlog and is idempotent when nothing is pending.
+        with Repo.open(start=lib_root) as r:
+            ingest.capture(r, "test", "another source about cache invalidation")
+        with Repo.open(start=lib_root) as r:
+            cu = libextract.catch_up(r, lcfg)
+        check("catch-up processed the one pending source", len(cu["processed"]) == 1)
+        with Repo.open(start=lib_root) as r:
+            cu2 = libextract.catch_up(r, lcfg)
+        check("catch-up on a drained brain is a no-op",
+              not cu2["processed"] and not cu2["failed"])
+    finally:
+        libclient._post_json = orig_transport
+
+    # A malformed model reply must fail the source, not crash the batch.
+    def _bad_transport(url, payload, headers, timeout):
+        return {"choices": [{"message": {"content": "sorry, I cannot do that"}}]}
+    libclient._post_json = _bad_transport
+    try:
+        with Repo.open(start=lib_root) as r:
+            bad_sid = ingest.capture(r, "test", "a source the model will fumble")
+        with Repo.open(start=lib_root) as r:
+            cu3 = libextract.catch_up(r, lcfg)
+        check("catch-up records a model failure without crashing",
+              len(cu3["failed"]) == 1 and cu3["failed"][0]["source_id"] == bad_sid)
+        with Repo.open(start=lib_root) as r:
+            still_new = r.one("SELECT status FROM sources WHERE id=?", (bad_sid,))["status"]
+        check("a fumbled source stays 'new' for a later retry", still_new == "new")
+    finally:
+        libclient._post_json = orig_transport
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

@@ -135,7 +135,10 @@ def fetch_for(repo: Repo, url: str, qid: int) -> int:
     content = md.encode("utf-8")
     h8 = util.sha256_bytes(content)[:8]
     dest = repo.root / "raw" / f"{util.slug(title or url)}-{h8}.md"
-    dest.write_text(md, encoding="utf-8")
+    # write_bytes, not write_text: keep on-disk bytes == the hashed content
+    # (Windows write_text emits CRLF and would break sources.hash, which
+    # evidence filing verifies before moving the artifact).
+    dest.write_bytes(content)
     rel = repo.rel(dest)
     sid = ingest._register_source(
         repo, content=content, rel_path=rel, title=title, url=url,

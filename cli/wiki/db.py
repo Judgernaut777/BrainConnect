@@ -34,6 +34,9 @@ class Repo:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
+        # The librarian runs as a separate process against the same WAL DB;
+        # wait for a writer instead of failing fast with "database is locked".
+        conn.execute("PRAGMA busy_timeout=10000;")
         # Carry an existing DB forward if SCHEMA_VERSION has bumped since it was
         # created. No-op (a single PRAGMA read) once the DB is current.
         migrate(conn)

@@ -149,11 +149,48 @@ Offline harness covering phases 1–7 against a throwaway temp DB (never touches
 the live DB). Network paths (URL fetch, websearch, live bookmark fetch) and the
 live MCP stdio server (needs the `[mcp]` extra) are exercised separately.
 
+## The librarian (event-driven, any model)
+The judgment half doesn't need an interactive Claude Code session or a nightly
+schedule. The **librarian** (`wiki-librarian`, installed alongside `wiki`) is a
+*separate* process — so `wiki` keeps its zero-model-call guarantee — that runs
+the extraction pass against **any OpenAI-compatible endpoint**: local and
+key-free (Ollama, LM Studio) or hosted (OpenRouter, DeepSeek, OpenAI, Anthropic's
+compat endpoint). It never promotes; everything it files is pending, behind the
+same human gate.
+
+It's triggered by **events, not a clock**. Turn it on in `config.toml`:
+```toml
+[librarian]
+auto_extract = true
+base_url = "http://localhost:11434/v1"   # Ollama; or any /v1 endpoint
+model = "qwen3:14b"
+# api_key_env = "OPENROUTER_API_KEY"     # NAME of an env var, for hosted endpoints
+```
+Now each `wiki add` / `drop` / `capture` / `transcribe` fires a detached
+extraction for the new source — a clip is extracted, gated, and rendered seconds
+after it lands. No cron, no Task Scheduler, no Desktop Routines.
+```powershell
+.\wiki capture --origin me "TIL: HTTP caching keys on the request"  # -> librarian extracts it
+wiki-librarian status        # config + how many sources are pending
+wiki-librarian catch-up      # idempotently drain any backlog (machine was off, model down)
+wiki-librarian extract --source 12   # one source on demand
+```
+`catch-up` is the recovery story schedules used to provide: if the librarian was
+unreachable, sources simply stay `new` until you run it (or a session, or a
+timer, if you want belt-and-suspenders). Per-task model routing lets a cheap
+local model do high-volume extraction while a stronger one is reserved for the
+harder passes — see `[librarian.models]` in `config.example.toml`.
+
+> The librarian is the model-bearing half by design. The original key-free,
+> subscription-only posture (below) is still fully supported — point the
+> librarian at a local Ollama, or skip it entirely and run the judgment passes
+> inside interactive/scheduled Claude Code sessions as before.
+
 ## Scheduled maintenance
-Maintenance splits in two: a **zero-model** half (bookmarks sync, gate, render,
-lint, health, commit) that is pure code, and a **judgment** half (claim
-extraction, synthesis, contradiction adjudication, skill drafting) that needs a
-model. Both stay key-free — pick the cadence that fits.
+If you prefer a clock to events, maintenance splits in two: a **zero-model** half
+(bookmarks sync, gate, render, lint, health, commit) that is pure code, and a
+**judgment** half (claim extraction, synthesis, contradiction adjudication, skill
+drafting) that needs a model. Both stay key-free — pick the cadence that fits.
 
 **Hybrid — no agent for the mechanical half.** A plain Windows Task Scheduler job
 runs `scripts/mechanical-maintain.ps1` daily (the zero-model steps only, no agent

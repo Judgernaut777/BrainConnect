@@ -29,6 +29,35 @@ def _emit(obj, as_json: bool):
     return False
 
 
+def _spawn_librarian(cfg: Config, source_ids: list[int]):
+    """Fire-and-forget `wiki-librarian extract` for freshly-ingested sources.
+
+    Opt-in via `[librarian] auto_extract` in config.toml. The model call happens
+    in a SEPARATE detached process — this CLI itself still makes zero model
+    calls. If the librarian is missing or fails, sources simply stay 'new' and
+    `wiki-librarian catch-up` (or a session) picks them up later.
+    """
+    if not source_ids or not cfg.data.get("librarian", {}).get("auto_extract"):
+        return
+    import os
+    kwargs: dict = {"cwd": str(cfg.root), "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
+    if os.name == "nt":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: outlive this console.
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        kwargs["start_new_session"] = True
+    for sid in source_ids:
+        try:
+            subprocess.Popen([sys.executable, "-m", "librarian",
+                              "extract", "--source", str(sid)], **kwargs)
+            print(f"librarian: extraction started for source #{sid}")
+        except OSError as e:
+            print(f"librarian: could not start ({e}); "
+                  f"run `wiki-librarian catch-up` later")
+            return
+
+
 # --- init -------------------------------------------------------------------
 def cmd_init(args):
     cfg = Config.load()
@@ -65,6 +94,7 @@ def cmd_add(args):
         for w in warns:
             print(w)
         print(f"added source #{sid} (origin {args.origin})")
+    _spawn_librarian(Config.load(), [sid])
 
 
 def cmd_pending(args):
@@ -100,17 +130,19 @@ def cmd_capture(args):
         except ingest.IngestError as e:
             sys.exit(f"error: {e}")
         print(f"captured as source #{sid} (origin session/{args.origin})")
+    _spawn_librarian(Config.load(), [sid])
 
 
 def cmd_drop(args):
     with Repo.open() as repo:
         results = dropmod.scan(repo, move=not args.no_move)
+    ingested = [r for r in results if r["source_id"]]
+    _spawn_librarian(Config.load(), [r["source_id"] for r in ingested])
     if _emit(results, args.json):
         return
     if not results:
         print("drop folder is empty (or not configured)")
         return
-    ingested = [r for r in results if r["source_id"]]
     warned = [r for r in results if r["warning"]]
     print(f"drop: ingested {len(ingested)} file(s)"
           + (f", {len(warned)} skipped" if warned else ""))
@@ -129,6 +161,7 @@ def cmd_transcribe(args):
         except (ingest.IngestError, extractmod.ExtractError) as e:
             sys.exit(f"error: {e}")
     print(f"transcribed source #{sid} (origin transcript)")
+    _spawn_librarian(Config.load(), [sid])
 
 
 def cmd_dump(args):

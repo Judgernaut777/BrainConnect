@@ -60,3 +60,44 @@ enabled = false
 # call — the server only wraps the read tools, plus the gated capture write.
 read_only = false          # true: serve read-only (omit the brain_capture write tool)
 recall_k = 8               # default top-k claims returned by brain_recall
+
+[librarian]
+# The librarian is the model-BEARING half — the `wiki-librarian` console script,
+# a SEPARATE process from `wiki` (which still makes zero model calls). It performs
+# the extraction judgment a Claude Code session would, using whatever model you
+# point it at. It never promotes: everything it files is pending, behind the same
+# human gate. Leave this table out entirely and nothing changes — extraction just
+# happens in interactive sessions as before.
+#
+# Trigger model: EVENT-DRIVEN, not scheduled. With auto_extract on, each `wiki
+# add/drop/capture/transcribe` fires a detached `wiki-librarian extract` for the
+# new source, so a clip is extracted seconds after it lands — no cron, no Task
+# Scheduler, no Desktop Routines. `wiki-librarian catch-up` drains any backlog
+# (machine was off, model was down); run it by hand, or from a timer if you like
+# belt-and-suspenders. If the librarian is unreachable, sources just stay 'new'.
+auto_extract = false
+
+# Any OpenAI-compatible /v1 endpoint. Local + key-free options keep the project's
+# original posture: Ollama ("http://localhost:11434/v1") or LM Studio
+# ("http://localhost:1234/v1"). Hosted options (OpenRouter, DeepSeek, OpenAI,
+# Anthropic's compat endpoint) also work — set api_key_env for those.
+base_url = "http://localhost:11434/v1"
+
+# The API key is NEVER stored here (that would trip `wiki lint`'s secret scan).
+# Give the NAME of an environment variable that holds it; "" means no key (local).
+api_key_env = ""                 # e.g. "OPENROUTER_API_KEY"
+
+# Default model for every task. Per-task overrides go under [librarian.models]:
+# cheap/local for the high-volume extraction, a stronger model for adjudication
+# and synthesis once those passes land.
+model = "qwen3:14b"
+
+# [librarian.models]
+# extract    = "qwen3:14b"                  # high volume — keep it cheap/local
+# adjudicate = "claude-sonnet-5"            # contradictions — lowest volume, hardest
+# synthesize = "claude-sonnet-5"            # page prose
+
+max_source_chars = 24000         # truncate raw source text sent to the model
+timeout = 180                    # seconds per model call
+temperature = 0.2
+retries = 1                      # re-ask attempts when output fails the contract
