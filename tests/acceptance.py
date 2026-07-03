@@ -1677,6 +1677,77 @@ def main():
     finally:
         libclient._post_json = _a_orig
 
+    # ---------------- Librarian synthesize (drafts only; model stubbed) ------
+    print("[librarian-synthesize] page prose + skill DRAFTS; never approves/promotes")
+    from librarian import synthesize as libsynth
+
+    sy = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-sy-")))
+    write(sy / "config.toml", (sy / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub"\nbase_url = "http://stub/v1"\n')
+    sycfg = _LibCfg.load(start=sy)
+    with Repo.open(start=sy) as r:
+        sysid = ingest.capture(r, "s", "redis notes")
+        ingest.file_claims_data(r, sysid, {
+            "source_id": sysid, "summary": "s",
+            "claims": [{"text": f"Redis fact number {i}.", "confidence": 0.99,
+                        "entities": ["Redis"]} for i in range(1, 6)],
+            "low_confidence": False})
+        gatemod.gate(r)
+        pend = [row["id"] for row in r.q(
+            "SELECT id FROM claims WHERE source_id=? AND status='pending'", (sysid,))]
+        if pend:
+            review.promote(r, pend)
+    with Repo.open(start=sy) as r:
+        pre = rendermod.render(r)
+    check("redis page needs synthesis review before the pass",
+          any("redis" in p for p in pre["needs_synthesis_review"]))
+
+    synth_reply = {"prose": "Redis is an in-memory data store commonly used as a cache."}
+    skill_reply = {"should_draft": True, "name": "redis",
+                   "description": "Activate when working with Redis caching.",
+                   "body": "# Redis\n\nUse Redis as an in-memory cache."}
+    def _sy_stub(url, payload, headers, timeout):
+        text = " ".join(m["content"] for m in payload["messages"])
+        reply = skill_reply if "should_draft" in text else synth_reply
+        return {"choices": [{"message": {"content": json.dumps(reply)}}]}
+    _sy_orig = libclient._post_json
+    libclient._post_json = _sy_stub
+    try:
+        with Repo.open(start=sy) as r:
+            srep = libsynth.run(r, sycfg)
+        check("synthesize drafted prose for the reviewed page", len(srep["pages"]) >= 1)
+        check("synthesize reports nothing still needing review",
+              not any("redis" in p for p in srep["needs_synthesis_review"]))
+        with Repo.open(start=sy) as r:
+            prow = r.one("SELECT synthesis FROM pages WHERE path LIKE '%redis%'")
+        check("prose landed in pages.synthesis",
+              prow is not None and synth_reply["prose"] in prow["synthesis"])
+        redis_files = list((sy / "wiki").rglob("*redis*.md"))
+        check("re-rendered page body carries the synthesis prose verbatim",
+              any(synth_reply["prose"] in f.read_text(encoding="utf-8") for f in redis_files))
+        # skill was DRAFTED, never approved, never written to disk
+        with Repo.open(start=sy) as r:
+            srow = r.one("SELECT * FROM skills WHERE name='redis'")
+        check("a skill was drafted from the dense candidate",
+              srow is not None and bool(srow["body"].strip()) and len(srep["skills"]) == 1)
+        check("drafted skill stays status='draft' (never approved)",
+              srow is not None and srow["status"] == "draft")
+        check("draft skill never rendered to .claude/skills",
+              not (sy / ".claude" / "skills" / "redis").exists())
+        # idempotent re-run: no duplicate draft, nothing new to synthesize
+        with Repo.open(start=sy) as r:
+            srep2 = libsynth.run(r, sycfg)
+        check("re-run finds no page needing synthesis (idempotent)", not srep2["pages"])
+        check("re-run drafts no new skill (idempotent)", not srep2["skills"])
+        with Repo.open(start=sy) as r:
+            ncount = r.one("SELECT COUNT(*) n FROM skills WHERE name='redis'")["n"]
+            still_draft = r.one("SELECT status FROM skills WHERE name='redis'")["status"]
+        check("skill draft not duplicated on re-run", ncount == 1)
+        check("skill still 'draft' after re-run (synthesize never approves)",
+              still_draft == "draft")
+    finally:
+        libclient._post_json = _sy_orig
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

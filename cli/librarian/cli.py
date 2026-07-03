@@ -13,6 +13,7 @@ from wiki.db import Repo
 
 from . import adjudicate as adjudicatemod
 from . import extract as extractmod
+from . import synthesize as synthesizemod
 from . import triage as triagemod
 from .config import LibrarianConfig
 
@@ -100,6 +101,37 @@ def cmd_adjudicate(args):
               "(`wiki contradiction resolve`, `wiki escalation close`).")
 
 
+def cmd_synthesize(args):
+    cfg = LibrarianConfig.load()
+    with Repo.open() as repo:
+        rep = synthesizemod.run(repo, cfg, skills=args.skills)
+        if _emit(rep, args.json):
+            return
+        if not rep["pages"] and not rep["skills"] and not rep["pages_failed"] \
+                and not rep["skills_failed"]:
+            print("nothing to synthesize — no page needs review"
+                  + ("" if args.skills else " (skills skipped)")
+                  + " and no new skill candidate")
+            return
+        print(f"synthesize: {len(rep['pages'])} page(s) synthesized, "
+              f"{len(rep['pages_failed'])} failed; "
+              f"{len(rep['skills'])} skill draft(s), {len(rep['skills_failed'])} failed")
+        for d in rep["pages"]:
+            print(f"  page {d['page']} ({d['chars']} chars)")
+        for f in rep["pages_failed"]:
+            print(f"  ! page {f['page']}: {f['error']}")
+        for d in rep["skills"]:
+            print(f"  skill draft {d['skill']} (from {d['candidate']})")
+            for w in d.get("warnings", []):
+                print(f"      note: {w}")
+        for f in rep["skills_failed"]:
+            print(f"  ! skill candidate {f['candidate']}: {f['error']}")
+        print(f"{rep['pages_rendered']} page(s) rendered; "
+              f"{len(rep['needs_synthesis_review'])} still need review.")
+        print("\nSkill drafts stay status='draft' — APPROVAL is a human gate "
+              "(`wiki skill approve`); the librarian never approves or installs.")
+
+
 def cmd_status(args):
     cfg = LibrarianConfig.load()
     with Repo.open() as repo:
@@ -158,6 +190,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="re-propose every open item, not just unproposed ones")
     addj(sa)
     sa.set_defaults(func=cmd_adjudicate)
+
+    sy = sub.add_parser("synthesize",
+                        help="draft page synthesis prose for pages whose basis "
+                             "changed, then draft skills for reusable candidates "
+                             "(drafts only; skill approval stays human)")
+    sy.add_argument("--skills", action=argparse.BooleanOptionalAction, default=True,
+                    help="include skill drafting (part 2); --no-skills to skip it")
+    addj(sy)
+    sy.set_defaults(func=cmd_synthesize)
 
     ss = sub.add_parser("status", help="show librarian config + pending backlog")
     addj(ss)
