@@ -134,10 +134,16 @@ def file_source(repo: Repo, source_id: int) -> dict:
 
 
 def file_all(repo: Repo, *, extracted_only: bool = True) -> list[dict]:
+    # 'failed' sources are bookmark stubs with an empty path, and 'quarantined'
+    # ones are held out of evidence — neither has a filable artifact, so skip
+    # both (they would otherwise error on every run). `path != ''` guards the
+    # same stubs defensively.
     if extracted_only:
-        rows = repo.q("SELECT id FROM sources WHERE status != 'new' ORDER BY id")
+        rows = repo.q("SELECT id FROM sources WHERE status NOT IN "
+                      "('new','failed','quarantined') AND path != '' ORDER BY id")
     else:
-        rows = repo.q("SELECT id FROM sources ORDER BY id")
+        rows = repo.q("SELECT id FROM sources WHERE status NOT IN "
+                      "('failed','quarantined') AND path != '' ORDER BY id")
     out = []
     for r in rows:
         try:

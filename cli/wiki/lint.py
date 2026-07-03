@@ -66,7 +66,13 @@ def _wiki_pages(repo: Repo) -> dict[str, str]:
     return out
 
 
-def lint(repo: Repo) -> dict:
+def lint(repo: Repo, *, queue: bool = True) -> dict:
+    """Structural checks over the DB + generated wiki.
+
+    queue=True (the `wiki lint` default) appends question-shaped findings to
+    research_queue. queue=False makes the pass strictly read-only — used by
+    `wiki health`, which must not have write side effects.
+    """
     findings: list[dict] = []
     pages = _wiki_pages(repo)
     stems = set(pages)
@@ -156,17 +162,19 @@ def lint(repo: Repo) -> dict:
     for f in _scan_api_keys(repo):
         findings.append(f)
 
-    # auto-append question findings to research_queue (origin lint)
+    # auto-append question findings to research_queue (origin lint). Skipped
+    # entirely when queue=False so health() stays strictly read-only.
     appended = 0
-    for q in questions:
-        if repo.one("SELECT 1 FROM research_queue WHERE question=? AND status='open'", (q,)):
-            continue
-        repo.ex("""INSERT INTO research_queue(question, priority, origin, status, created_at)
-                   VALUES (?, 0.6, 'lint', 'open', ?)""", (q, util.now_iso()))
-        appended += 1
+    if queue:
+        for q in questions:
+            if repo.one("SELECT 1 FROM research_queue WHERE question=? AND status='open'", (q,)):
+                continue
+            repo.ex("""INSERT INTO research_queue(question, priority, origin, status, created_at)
+                       VALUES (?, 0.6, 'lint', 'open', ?)""", (q, util.now_iso()))
+            appended += 1
     if appended:
         repo.finalize("lint", f"{len(findings)} findings; +{appended} queue items")
-    else:
+    elif queue:
         repo.conn.commit()
 
     counts: dict[str, int] = {}

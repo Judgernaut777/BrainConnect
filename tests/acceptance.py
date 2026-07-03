@@ -992,6 +992,79 @@ def main():
     finally:
         libclient._post_json = orig_transport
 
+    # ---------------- Review fixes (#2 #3 #4 #6) ------------------------------
+    print("[review-fixes] idempotency, read-only health, negation, evidence skips")
+    fx = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-fx-")))
+    ext = {"summary": "s", "claims": [
+        {"text": "Widget X supports feature Y.", "confidence": 0.6, "entities": ["Widget X"]}],
+        "low_confidence": False}
+
+    # #3: re-filing an already-extracted source is refused (no duplicate claims).
+    with Repo.open(start=fx) as r:
+        fsid = ingest.capture(r, "test", "seed for idempotency")
+        ext["source_id"] = fsid
+        ingest.file_claims_data(r, fsid, dict(ext))
+    dup_refused = False
+    try:
+        with Repo.open(start=fx) as r:
+            ingest.file_claims_data(r, fsid, dict(ext))
+    except ingest.IngestError:
+        dup_refused = True
+    check("re-file refused without --refile (idempotency guard)", dup_refused)
+    with Repo.open(start=fx) as r:
+        n = r.one("SELECT COUNT(*) n FROM claims WHERE source_id=?", (fsid,))["n"]
+    check("refused re-file left exactly one claim", n == 1)
+
+    # #3: refile=True replaces (still one claim), but is refused once promoted.
+    with Repo.open(start=fx) as r:
+        ingest.file_claims_data(r, fsid, dict(ext), refile=True)
+        n2 = r.one("SELECT COUNT(*) n FROM claims WHERE source_id=?", (fsid,))["n"]
+    check("refile=True replaces rather than duplicates", n2 == 1)
+    with Repo.open(start=fx) as r:
+        cid = r.one("SELECT id FROM claims WHERE source_id=?", (fsid,))["id"]
+        review.promote(r, [cid])
+    promoted_refile_refused = False
+    try:
+        with Repo.open(start=fx) as r:
+            ingest.file_claims_data(r, fsid, dict(ext), refile=True)
+    except ingest.IngestError:
+        promoted_refile_refused = True
+    check("refile refused when a claim is already promoted", promoted_refile_refused)
+
+    # #2: health() must not mutate the research queue (lint queue=False).
+    with Repo.open(start=fx) as r:
+        before = r.one("SELECT COUNT(*) n FROM research_queue")["n"]
+        healthmod.compute(r)
+        after = r.one("SELECT COUNT(*) n FROM research_queue")["n"]
+    check("health does not append research-queue items", before == after)
+    with Repo.open(start=fx) as r:
+        lrep = lintmod.lint(r, queue=False)
+    check("lint queue=False reports zero queued", lrep["queued"] == 0)
+
+    # #4: negation heuristic no longer mis-fires on ordinary '*nt' words.
+    from wiki import util as _u
+    check("'important' is not read as negation", not _u.has_negation("this is important"))
+    check("'deployment' is not read as negation", not _u.has_negation("the deployment works"))
+    check("'environment' is not read as negation", not _u.has_negation("the build environment"))
+    check("apostrophe-free contraction 'isnt' still reads as negation",
+          _u.has_negation("it isnt supported"))
+    check("bare 'not' still reads as negation", _u.has_negation("does not work"))
+
+    # #6: evidence file --all skips 'failed' bookmark stubs (empty path) instead
+    # of erroring on every one (they have no filable artifact).
+    from wiki import util as _u2
+    with Repo.open(start=fx) as r:
+        ts = _u2.now_iso()
+        r.ex("INSERT INTO sources(hash, path, title, url, origin, fetched_at, "
+             "ingested_at, status) VALUES "
+             "('failhash','','u','http://u','bookmark',?,?, 'failed')", (ts, ts))
+        r.conn.commit()
+        failed_id = r.one("SELECT id FROM sources WHERE status='failed'")["id"]
+        res = evidencemod.file_all(r, extracted_only=True)
+    filed_ids = {row["source_id"] for row in res}
+    check("evidence file --all skips the failed stub", failed_id not in filed_ids)
+    check("evidence file --all reports no errors", not any(row.get("error") for row in res))
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

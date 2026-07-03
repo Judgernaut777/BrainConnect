@@ -15,8 +15,8 @@ def compute(repo: Repo) -> dict:
         "SELECT COUNT(*) n FROM contradictions WHERE status='open'")["n"]
 
     # reuse lint's structural findings for orphans + stale candidates, but do
-    # not let health mutate the queue: run the read-only parts directly.
-    findings = lintmod.lint(repo)["findings"]
+    # not let health mutate the queue: queue=False makes the pass read-only.
+    findings = lintmod.lint(repo, queue=False)["findings"]
     orphans = sum(1 for f in findings if f["check"] == "orphan_page")
     stale_candidates = sum(1 for f in findings if f["check"] == "stale_candidate")
 

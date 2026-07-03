@@ -241,20 +241,53 @@ def _detect_contradictions(repo: Repo, new_claim_id: int, text: str) -> int:
     return opened
 
 
-def file_claims(repo: Repo, source_id: int, json_path: str) -> dict:
+def file_claims(repo: Repo, source_id: int, json_path: str, *,
+                refile: bool = False) -> dict:
     try:
         data = json.loads(Path(json_path).read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise IngestError(f"extraction JSON is not valid JSON: {e}")
-    return file_claims_data(repo, source_id, data)
+    return file_claims_data(repo, source_id, data, refile=refile)
 
 
-def file_claims_data(repo: Repo, source_id: int, data: dict) -> dict:
+def _clear_prior_extraction(repo: Repo, source_id: int) -> None:
+    """Delete a source's existing claims (and their dependent rows) so a re-file
+    replaces rather than duplicates. Refuses if any are promoted/superseded —
+    those are truth or referenced; supersede them by hand instead."""
+    rows = repo.q("SELECT id, status FROM claims WHERE source_id = ?", (source_id,))
+    locked = [r["id"] for r in rows if r["status"] in ("promoted", "superseded")]
+    if locked:
+        raise IngestError(
+            f"source #{source_id} has promoted/superseded claim(s) "
+            + ", ".join(f"#{i}" for i in locked)
+            + " — refile would drop them; supersede or reject manually first")
+    ids = [r["id"] for r in rows]
+    for cid in ids:
+        # No ON DELETE CASCADE on these FKs, so clear dependents first (order
+        # matters with foreign_keys=ON). embeddings/skill_claims do cascade.
+        repo.ex("DELETE FROM contradictions WHERE claim_a = ? OR claim_b = ?", (cid, cid))
+        repo.ex("DELETE FROM relations WHERE claim_id = ?", (cid,))
+        repo.ex("DELETE FROM claim_entities WHERE claim_id = ?", (cid,))
+        repo.ex("DELETE FROM claims WHERE id = ?", (cid,))
+
+
+def file_claims_data(repo: Repo, source_id: int, data: dict, *,
+                     refile: bool = False) -> dict:
     """File an already-parsed extraction object. Entry point for the librarian
-    (which holds a dict, not a file); `file_claims` wraps it for the CLI path."""
+    (which holds a dict, not a file); `file_claims` wraps it for the CLI path.
+
+    Idempotency guard: a source is extracted once. Re-filing an already-extracted
+    source is refused unless refile=True, which first clears the prior (non-
+    promoted) claims so the result replaces rather than silently duplicates."""
     src = repo.one("SELECT * FROM sources WHERE id = ?", (source_id,))
     if not src:
         raise IngestError(f"no source #{source_id}")
+    if src["status"] != "new":
+        if not refile:
+            raise IngestError(
+                f"source #{source_id} is already {src['status']!r}, not 'new' — "
+                "already extracted. Pass refile=True (CLI: --refile) to replace it.")
+        _clear_prior_extraction(repo, source_id)
     _validate(data, source_id)
 
     origin = src["origin"]

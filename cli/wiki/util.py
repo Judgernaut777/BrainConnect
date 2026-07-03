@@ -43,11 +43,19 @@ def slug(text: str, maxlen: int = 60) -> str:
 
 _word = re.compile(r"[A-Za-z0-9]+")
 
-# Negation tokens used by the contradiction polarity heuristic.
+# Negation tokens used by the contradiction polarity heuristic. Apostrophe-free
+# contraction forms are enumerated explicitly rather than matched by a "*nt"
+# suffix, which mis-flagged ordinary words like "important", "different",
+# "deployment", "count", "current", "environment". (The tokenizer splits on the
+# apostrophe, so "isn't" becomes "isn"+"t" and is not detected either way — a
+# known coarseness of this polarity check, not a regression.)
 NEGATION_TOKENS = {
-    "not", "no", "never", "cannot", "cant", "wont", "without", "fails",
-    "failed", "unsupported", "incompatible", "false", "lacks", "missing",
-    "doesnt", "isnt", "arent", "dont", "none", "neither", "nor",
+    "not", "no", "never", "cannot", "without", "fails", "failed",
+    "unsupported", "incompatible", "false", "lacks", "missing",
+    "none", "neither", "nor", "aint",
+    # negative contractions, apostrophe-stripped
+    "cant", "wont", "dont", "doesnt", "isnt", "arent", "wasnt", "werent",
+    "didnt", "hasnt", "havent", "hadnt", "wouldnt", "couldnt", "shouldnt",
 }
 
 
@@ -94,7 +102,7 @@ def fts_or_query(text: str) -> str:
 
 
 def has_negation(text: str) -> bool:
-    return any(t in NEGATION_TOKENS or t.endswith("nt") for t in tokens(text))
+    return any(t in NEGATION_TOKENS for t in tokens(text))
 
 
 def jaccard(a: str, b: str) -> float:

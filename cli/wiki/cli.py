@@ -113,7 +113,8 @@ def cmd_pending(args):
 def cmd_file_claims(args):
     with Repo.open() as repo:
         try:
-            res = ingest.file_claims(repo, args.source, args.json_file)
+            res = ingest.file_claims(repo, args.source, args.json_file,
+                                     refile=args.refile)
         except ingest.IngestError as e:
             sys.exit(f"error: {e}")
         print(f"filed: {res['claims']} claims, summary={res['summary']}, "
@@ -683,6 +684,8 @@ def build_parser() -> argparse.ArgumentParser:
     sf = sub.add_parser("file-claims")
     sf.add_argument("--source", type=int, required=True)
     sf.add_argument("--json", dest="json_file", required=True, metavar="FILE")
+    sf.add_argument("--refile", action="store_true",
+                    help="replace a prior extraction (clears non-promoted claims first)")
     sf.set_defaults(func=cmd_file_claims)
 
     sev = sub.add_parser("evidence", help="file and index raw primary evidence")
