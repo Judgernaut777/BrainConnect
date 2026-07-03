@@ -31,3 +31,18 @@ jobs:
         # Pure Python, offline, temp DB. Also enforces: no API keys / no machine
         # paths in tracked files (the project's key-free guarantee).
         run: python tests/acceptance.py
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff check
+        # Scoped conservatively via cli/pyproject.toml [tool.ruff]: real-bug
+        # rules only (pyflakes + syntax errors), no broad style rules.
+        run: ruff check cli/

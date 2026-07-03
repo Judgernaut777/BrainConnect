@@ -1495,6 +1495,41 @@ def main():
     check("the common promoted->rejected path (walking back a promotion) still works",
           pend_status2 == "rejected")
 
+    print("[group-d #13] POSIX parity — wrapper, docs, scheduling example")
+    _repo_root = Path(__file__).resolve().parents[1]
+    wiki_sh = _repo_root / "wiki.sh"
+    check("POSIX wiki.sh wrapper exists at the repo root", wiki_sh.is_file())
+    check("wiki.sh is executable", wiki_sh.stat().st_mode & 0o111 != 0)
+    check("no bare 'wiki' file at the repo root "
+          "(it would collide with the generated wiki/ vault dir)",
+          not (_repo_root / "wiki").exists())
+    wiki_sh_text = wiki_sh.read_text(encoding="utf-8")
+    check("wiki.sh resolves the repo venv console script when present",
+          ".venv/bin/wiki" in wiki_sh_text)
+    check("wiki.sh falls back to `python3 -m wiki`",
+          "python3 -m wiki" in wiki_sh_text)
+
+    mech_sh = _repo_root / "scripts" / "mechanical-maintain.sh"
+    check("POSIX mechanical-maintain.sh exists beside the .ps1", mech_sh.is_file())
+    check("mechanical-maintain.sh is executable", mech_sh.stat().st_mode & 0o111 != 0)
+
+    readme_text = (_repo_root / "README.md").read_text(encoding="utf-8")
+    check("README documents a POSIX venv setup block",
+          "python3 -m venv .venv" in readme_text and "pip install -e ./cli" in readme_text)
+    check("README documents a cron scheduling example",
+          "crontab -e" in readme_text)
+    check("README documents a systemd-timer scheduling example",
+          "systemctl --user enable --now" in readme_text and "OnCalendar" in readme_text)
+
+    print("[group-d ruff] lint config + CI wiring")
+    pyproject_text = (_repo_root / "cli" / "pyproject.toml").read_text(encoding="utf-8")
+    check("cli/pyproject.toml declares a [tool.ruff] section",
+          "[tool.ruff]" in pyproject_text)
+    check("ruff is scoped to real-bug rules (pyflakes + E9), not broad style rules",
+          'select = ["F", "E9"]' in pyproject_text)
+    ci_text = (_repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    check("CI runs `ruff check`", "ruff check" in ci_text)
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

@@ -49,7 +49,7 @@ def reject(repo: Repo, cids: list[int]) -> None:
 
 
 def supersede(repo: Repo, old_id: int, new_id: int) -> None:
-    old = _require_claim(repo, old_id)
+    _require_claim(repo, old_id)  # validate existence; raises if missing
     new = _require_claim(repo, new_id)
     # session/* and autoresearch claims may never auto-supersede; this is a
     # human/maintain action so it is allowed, but we record provenance.

@@ -6,7 +6,7 @@ auto-appended to research_queue (origin 'lint'). Pure code.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from .db import Repo
 from .render import _entity_input_hash, _qualifying_entities

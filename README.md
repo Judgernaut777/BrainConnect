@@ -76,15 +76,29 @@ py -m venv .venv
 `config.example.toml` is the template. The live DB lives at an absolute path
 **outside** the repo so scheduled-task worktrees share one source of truth.
 
+Same setup on Linux/macOS:
+```bash
+# from the repo root
+cp config.example.toml config.toml            # then edit paths.db etc.
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ./cli       # installs the CLI + trafilatura
+.venv/bin/wiki init                            # create DB + scaffold dirs
+```
+
 Optional extras (each guarded — the core CLI runs without them):
 `[search]` (robust DuckDuckGo via `ddgs`) · `[docs]` (Docling + Tesseract OCR for
 PDFs/images) · `[media]` (YouTube transcripts) · `[semantic]` (local-embedding
-search) · `[mcp]` (serve the brain over MCP). E.g. `pip install -e ".\cli[search,docs]"`.
+search) · `[mcp]` (serve the brain over MCP). E.g. `pip install -e ".\cli[search,docs]"`
+(POSIX: `pip install -e "./cli[search,docs]"`).
 Run the CLI any of these ways:
-- `.venv\Scripts\wiki.exe <cmd>` (the installed console script), or
-- `.\wiki <cmd>` from the repo root (wrapper → repo venv), or
-- add `.venv\Scripts` to PATH, or `pipx install .\cli` into a PATH'd Python so
-  scheduled tasks can call a bare `wiki`.
+- `.venv\Scripts\wiki.exe <cmd>` (Windows) / `.venv/bin/wiki <cmd>` (POSIX) — the
+  installed console script, or
+- `.\wiki <cmd>` (Windows) / `./wiki.sh <cmd>` (POSIX) from the repo root
+  (wrapper → repo venv; POSIX uses the `.sh` extension, unlike Windows'
+  `.cmd`/`.ps1`, because the repo root also holds the generated `wiki/` vault
+  — a bare `wiki` file there would collide with it), or
+- add the venv's script dir to PATH, or `pipx install ./cli` into a PATH'd Python
+  so scheduled tasks can call a bare `wiki`.
 
 ## Quick tour
 ```powershell
@@ -206,6 +220,41 @@ Register-ScheduledTask -TaskName "wiki-brain mechanical maintain" `
   -Trigger (New-ScheduledTaskTrigger -Daily -At 6:30am) `
   -Principal (New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U) `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable)
+```
+Same idea on Linux/macOS, via `scripts/mechanical-maintain.sh` (the POSIX twin
+of the `.ps1` above — same steps, same "commits but never pushes" contract).
+
+*Cron:*
+```bash
+crontab -e
+# add:
+30 6 * * * /path/to/wiki-brain/scripts/mechanical-maintain.sh
+```
+
+*systemd timer (runs whether or not you're logged in):*
+```ini
+# ~/.config/systemd/user/wiki-brain-maintain.service
+[Unit]
+Description=wiki-brain mechanical maintain
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/wiki-brain/scripts/mechanical-maintain.sh
+```
+```ini
+# ~/.config/systemd/user/wiki-brain-maintain.timer
+[Unit]
+Description=Daily wiki-brain mechanical maintain
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+```bash
+systemctl --user enable --now wiki-brain-maintain.timer
 ```
 
 **Fully autonomous — a scheduled agent runner.** Point any agent that supports

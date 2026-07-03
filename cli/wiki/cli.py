@@ -5,7 +5,6 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 from .config import Config
 from .db import Repo, init_db

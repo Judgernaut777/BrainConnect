@@ -33,3 +33,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["wiki", "librarian"]
+
+# Scoped conservatively: real-bug rules only (unused imports/names, undefined
+# names, syntax errors). No broad style rules — this project's style is
+# hand-set and shouldn't churn to satisfy a linter.
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F", "E9"]
