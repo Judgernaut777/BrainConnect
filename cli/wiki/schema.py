@@ -203,10 +203,23 @@ CREATE TABLE skill_versions (
   created_at TEXT NOT NULL,
   UNIQUE(skill_id, version)
 );
+
+-- Librarian triage (advisory only): the model-bearing librarian records a
+-- promote/reject/hold RECOMMENDATION per pending claim so the human review has
+-- a pre-triaged queue. It NEVER promotes — promotion stays the human gate. One
+-- row per claim (latest recommendation wins); cascades away with the claim.
+CREATE TABLE claim_triage (
+  claim_id INTEGER PRIMARY KEY REFERENCES claims(id) ON DELETE CASCADE,
+  recommendation TEXT NOT NULL,        -- promote | reject | hold
+  reason TEXT NOT NULL,
+  confidence REAL,                     -- the librarian's 0..1 confidence
+  model TEXT,                          -- which model produced it
+  created_at TEXT NOT NULL
+);
 """
 
 ALL_DDL = CORE_DDL + EXT_DDL
 
 # User-version stamped on the DB. Keep in sync with migrate.latest_version()
 # (the migration runner carries existing DBs forward to this version).
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7

@@ -1530,6 +1530,69 @@ def main():
     ci_text = (_repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     check("CI runs `ruff check`", "ruff check" in ci_text)
 
+    # ---------------- Librarian triage (advisory; model stubbed) -------------
+    print("[librarian-triage] recommendations over pending claims; never promotes")
+    from librarian import triage as libtriage
+    from librarian.config import LibrarianConfig as _LibCfg
+    from wiki import triage as wtriage
+
+    tr = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-tr-")))
+    write(tr / "config.toml", (tr / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub"\nbase_url = "http://stub/v1"\n')
+    tcfg = _LibCfg.load(start=tr)
+    with Repo.open(start=tr) as r:
+        tsid = ingest.capture(r, "t", "a speculative candidate claim")
+        ingest.file_claims_data(r, tsid, {
+            "source_id": tsid, "summary": "s",
+            "claims": [{"text": "Widget Z will ship in 2099.", "confidence": 0.5,
+                        "entities": ["Widget Z"]}], "low_confidence": False})
+        gatemod.gate(r)  # low-confidence session claim -> stays pending
+        pend_id = r.one("SELECT id FROM claims WHERE source_id=?", (tsid,))["id"]
+        pend_status = r.one("SELECT status FROM claims WHERE id=?", (pend_id,))["status"]
+    check("triage precondition: the claim is pending", pend_status == "pending")
+
+    triage_reply = {"recommendation": "hold", "confidence": 0.4,
+                    "reason": "Speculative far-future date; leave for the human."}
+    def _t_stub(url, payload, headers, timeout):
+        return {"choices": [{"message": {"content": json.dumps(triage_reply)}}]}
+    _t_orig = libclient._post_json
+    libclient._post_json = _t_stub
+    try:
+        with Repo.open(start=tr) as r:
+            trep = libtriage.run(r, tcfg)
+        check("triage produced one recommendation", len(trep["triaged"]) == 1)
+        with Repo.open(start=tr) as r:
+            row = r.one("SELECT * FROM claim_triage WHERE claim_id=?", (pend_id,))
+            st = r.one("SELECT status FROM claims WHERE id=?", (pend_id,))["status"]
+        check("recommendation is stored in claim_triage",
+              row is not None and row["recommendation"] == "hold")
+        check("triage NEVER changes claim status (still pending)", st == "pending")
+        with Repo.open(start=tr) as r:
+            trep2 = libtriage.run(r, tcfg)
+        check("triage is idempotent (untriaged-only skips already-triaged)",
+              not trep2["triaged"])
+        # pure-code reader
+        with Repo.open(start=tr) as r:
+            lst = wtriage.listing(r)
+            summ = wtriage.summary(r)
+        check("wiki triage listing surfaces the recommendation",
+              any(x["recommendation"] == "hold" for x in lst))
+        check("wiki triage summary counts it (hold=1, untriaged=0)",
+              summ["hold"] == 1 and summ["untriaged"] == 0)
+        # a malformed recommendation is rejected by the contract
+        bad_reply = {"recommendation": "definitely-promote", "confidence": 0.9, "reason": "x"}
+        libclient._post_json = lambda *a: {"choices": [{"message": {"content": json.dumps(bad_reply)}}]}
+        with Repo.open(start=tr) as r:
+            r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
+                 "VALUES ('another pending claim', ?, 0.5, 'session/t', 'pending', ?)",
+                 (tsid, __import__("wiki.util", fromlist=["now_iso"]).now_iso()))
+            r.conn.commit()
+            bad_rep = libtriage.run(r, tcfg)
+        check("triage rejects an out-of-vocabulary recommendation",
+              len(bad_rep["failed"]) == 1 and not bad_rep["triaged"])
+    finally:
+        libclient._post_json = _t_orig
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

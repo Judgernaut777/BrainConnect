@@ -195,6 +195,18 @@ timer, if you want belt-and-suspenders). Per-task model routing lets a cheap
 local model do high-volume extraction while a stronger one is reserved for the
 harder passes — see `[librarian.models]` in `config.example.toml`.
 
+**Triage (advisory).** The auto-gate promotes the easy tier and holds the rest.
+`wiki-librarian triage` adds model judgment on the held claims — a
+promote/reject/hold **recommendation** with a reason per claim — but it **never
+promotes**; promotion stays the human gate. You then open a pre-sorted review
+queue and act on it:
+```powershell
+wiki-librarian triage        # record recommendations for pending claims (uses the `triage` model)
+wiki triage                  # summary: promote/reject/hold/untriaged counts (pure code, read-only)
+wiki triage list --recommendation promote   # the claims it suggests promoting
+wiki promote 14 19 ; wiki reject 22          # you decide — the gate is still yours
+```
+
 > The librarian is the model-bearing half by design. The original key-free,
 > subscription-only posture (below) is still fully supported — point the
 > librarian at a local Ollama, or skip it entirely and run the judgment passes

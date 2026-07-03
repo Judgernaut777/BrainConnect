@@ -58,6 +58,12 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX claim_entities_entity_id ON claim_entities(entity_id)",
         "CREATE INDEX relations_dst ON relations(dst)",
     ],
+    7: [  # librarian triage recommendations (advisory; never promotes)
+        "CREATE TABLE claim_triage ("
+        " claim_id INTEGER PRIMARY KEY REFERENCES claims(id) ON DELETE CASCADE,"
+        " recommendation TEXT NOT NULL, reason TEXT NOT NULL, confidence REAL,"
+        " model TEXT, created_at TEXT NOT NULL)",
+    ],
 }
 
 

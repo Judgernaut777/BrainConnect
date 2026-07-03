@@ -12,7 +12,7 @@ from . import (ingest, search as searchmod, queue as queuemod, render as renderm
                lint as lintmod, health as healthmod, gather, gate as gatemod,
                review, fetch as fetchmod, drop as dropmod, extract as extractmod,
                embed as embedmod, skills as skillsmod, mcp_server as mcpmod,
-               evidence as evidencemod)
+               evidence as evidencemod, triage as triagemod)
 
 SCAFFOLD_DIRS = [
     "raw", "raw/assets", "inbox",
@@ -414,6 +414,35 @@ def cmd_gather_prep(args):
 
 
 # --- gate -------------------------------------------------------------------
+def cmd_triage(args):
+    with Repo.open() as repo:
+        if args.tcmd == "summary" or args.tcmd is None:
+            s = triagemod.summary(repo)
+            if _emit(s, args.json):
+                return
+            total = sum(s.values())
+            print(f"pending claims: {total} "
+                  f"(promote {s['promote']}, reject {s['reject']}, "
+                  f"hold {s['hold']}, untriaged {s['untriaged']})")
+            print("act on recommendations with `wiki promote/reject <ids>`; "
+                  "generate them with `wiki-librarian triage`.")
+            return
+        rows = triagemod.listing(repo, recommendation=args.recommendation)
+        if _emit(rows, args.json):
+            return
+        if not rows:
+            print("no pending claims" + (f" recommended '{args.recommendation}'"
+                                         if args.recommendation else ""))
+            return
+        for r in rows:
+            rec = r["recommendation"] or "untriaged"
+            tc = f" conf {r['triage_confidence']:.2f}" if r["triage_confidence"] is not None else ""
+            print(f"  [{rec}{tc}] claim #{r['id']} (src: {r['source_title'] or r['source_id']})")
+            print(f"    {r['text']}")
+            if r["reason"]:
+                print(f"    ↳ {r['reason']}")
+
+
 def cmd_gate(args):
     with Repo.open() as repo:
         rep = gatemod.gate(repo)
@@ -768,6 +797,20 @@ def build_parser() -> argparse.ArgumentParser:
     sgp = sub.add_parser("gather-prep"); addj(sgp); sgp.set_defaults(func=cmd_gather_prep)
 
     sgt = sub.add_parser("gate"); addj(sgt); sgt.set_defaults(func=cmd_gate)
+
+    # triage: read the librarian's advisory recommendations over pending claims
+    strg = sub.add_parser("triage",
+                          help="show librarian promote/reject/hold recommendations "
+                               "for pending claims (read-only)")
+    tsub = strg.add_subparsers(dest="tcmd")
+    tls = tsub.add_parser("list", help="pending claims with their recommendation")
+    tls.add_argument("--recommendation", choices=("promote", "reject", "hold"),
+                     help="filter to one recommendation")
+    addj(tls)
+    tsm = tsub.add_parser("summary", help="counts by recommendation")
+    addj(tsm)
+    addj(strg)
+    strg.set_defaults(func=cmd_triage)
 
     spr = sub.add_parser("promote"); spr.add_argument("ids", type=int, nargs="+")
     spr.set_defaults(func=cmd_promote)

@@ -12,6 +12,7 @@ import sys
 from wiki.db import Repo
 
 from . import extract as extractmod
+from . import triage as triagemod
 from .config import LibrarianConfig
 
 
@@ -56,6 +57,27 @@ def cmd_catch_up(args):
                   f"{rep['pages_rendered']} page(s) rendered")
 
 
+def cmd_triage(args):
+    cfg = LibrarianConfig.load()
+    with Repo.open() as repo:
+        rep = triagemod.run(repo, cfg, only_untriaged=not args.all)
+        if _emit(rep, args.json):
+            return
+        if not rep["triaged"] and not rep["failed"]:
+            print("nothing to triage — no pending claims (or all already triaged; "
+                  "use --all to re-triage)")
+            return
+        print(f"triage: {len(rep['triaged'])} recommendation(s), "
+              f"{len(rep['failed'])} failed")
+        for d in rep["triaged"]:
+            print(f"  {d['recommendation']:<7} claim #{d['claim_id']} "
+                  f"(conf {d['confidence']:.2f}): {d['reason']}")
+        for f in rep["failed"]:
+            print(f"  ! claim #{f['claim_id']}: {f['error']}")
+        print("\nRecommendations are advisory — act with `wiki promote/reject` "
+              "(see `wiki triage`).")
+
+
 def cmd_status(args):
     cfg = LibrarianConfig.load()
     with Repo.open() as repo:
@@ -98,6 +120,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="extract every pending source (idempotent), then gate + render")
     addj(sc)
     sc.set_defaults(func=cmd_catch_up)
+
+    st = sub.add_parser("triage",
+                        help="recommend promote/reject/hold for gate-held pending "
+                             "claims (advisory; never promotes)")
+    st.add_argument("--all", action="store_true",
+                    help="re-triage every pending claim, not just untriaged ones")
+    addj(st)
+    st.set_defaults(func=cmd_triage)
 
     ss = sub.add_parser("status", help="show librarian config + pending backlog")
     addj(ss)

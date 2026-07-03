@@ -67,27 +67,35 @@ def _conflicts_with_promoted(repo: Repo, claim) -> bool:
     return any(util.polarity_conflict(claim["text"], r["text"]) for r in rows)
 
 
-def gate(repo: Repo) -> dict:
+def hold_reasons(repo: Repo, claim) -> list[str]:
+    """Why the auto-gate would HOLD this pending claim (empty list => auto-promotable).
+    Read-only: no mutation, so the librarian triage pass can reuse it. Safety
+    checks fail CLOSED — an FTS error becomes a hold reason, never a silent pass."""
     thresh = float(repo.cfg.gate("auto_promote_confidence"))
+    reasons: list[str] = []
+    if claim["confidence"] < thresh:
+        reasons.append(f"confidence {claim['confidence']:.2f} < {thresh}")
+    if _has_open_contradiction(repo, claim["id"]):
+        reasons.append("open contradiction")
+    if claim["origin"] != "clip":
+        try:
+            if _corroborating_sources(repo, claim) < 2:
+                reasons.append("not corroborated (need 2 sources or origin=clip)")
+        except GateCheckError as e:
+            reasons.append(f"corroboration check failed — held fail-closed: {e}")
+    try:
+        if _conflicts_with_promoted(repo, claim):
+            reasons.append("conflicts with promoted claim")
+    except GateCheckError as e:
+        reasons.append(f"conflict check failed — held fail-closed: {e}")
+    return reasons
+
+
+def gate(repo: Repo) -> dict:
     pending = repo.q("SELECT * FROM claims WHERE status = 'pending' ORDER BY id")
     promoted, held = [], []
     for c in pending:
-        reasons = []
-        if c["confidence"] < thresh:
-            reasons.append(f"confidence {c['confidence']:.2f} < {thresh}")
-        if _has_open_contradiction(repo, c["id"]):
-            reasons.append("open contradiction")
-        if c["origin"] != "clip":
-            try:
-                if _corroborating_sources(repo, c) < 2:
-                    reasons.append("not corroborated (need 2 sources or origin=clip)")
-            except GateCheckError as e:
-                reasons.append(f"corroboration check failed — held fail-closed: {e}")
-        try:
-            if _conflicts_with_promoted(repo, c):
-                reasons.append("conflicts with promoted claim")
-        except GateCheckError as e:
-            reasons.append(f"conflict check failed — held fail-closed: {e}")
+        reasons = hold_reasons(repo, c)
         if reasons:
             held.append({"id": c["id"], "reasons": reasons})
             continue
