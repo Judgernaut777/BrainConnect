@@ -104,6 +104,13 @@ def escalation_list(repo: Repo, status: str | None = "open") -> list:
     return repo.q("SELECT * FROM escalations ORDER BY id")
 
 
+def escalation_propose(repo: Repo, eid: int, proposal: str) -> None:
+    if not repo.one("SELECT 1 FROM escalations WHERE id = ?", (eid,)):
+        raise SystemExit(f"error: no escalation #{eid}")
+    repo.ex("UPDATE escalations SET proposal = ? WHERE id = ?", (proposal, eid))
+    repo.finalize("escalation-propose", f"#{eid}")
+
+
 def escalation_close(repo: Repo, eid: int) -> None:
     if not repo.one("SELECT 1 FROM escalations WHERE id = ?", (eid,)):
         raise SystemExit(f"error: no escalation #{eid}")

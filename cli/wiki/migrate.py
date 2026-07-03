@@ -64,6 +64,9 @@ MIGRATIONS: dict[int, list[str]] = {
         " recommendation TEXT NOT NULL, reason TEXT NOT NULL, confidence REAL,"
         " model TEXT, created_at TEXT NOT NULL)",
     ],
+    8: [  # librarian adjudicate proposals for open escalations (advisory)
+        "ALTER TABLE escalations ADD COLUMN proposal TEXT",
+    ],
 }
 
 

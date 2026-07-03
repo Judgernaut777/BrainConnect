@@ -502,7 +502,11 @@ def cmd_escalation(args):
             if _emit([dict(r) for r in rows], args.json):
                 return
             for r in rows:
-                print(f"  e#{r['id']} [{r['status']}] source #{r['source_id']}: {r['reason']}")
+                print(f"  e#{r['id']} [{r['status']}] source #{r['source_id']}: {r['reason']}"
+                      + (f"  proposal: {r['proposal']}" if r['proposal'] else ""))
+        elif args.ecmd == "propose":
+            review.escalation_propose(repo, args.id, args.text)
+            print(f"proposal recorded for e#{args.id}")
         elif args.ecmd == "close":
             review.escalation_close(repo, args.id)
             print(f"e#{args.id} closed")
@@ -829,6 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     se = sub.add_parser("escalation"); esub = se.add_subparsers(dest="ecmd", required=True)
     el = esub.add_parser("list"); el.add_argument("--status", default="open"); addj(el)
+    ep = esub.add_parser("propose"); ep.add_argument("id", type=int); ep.add_argument("text")
     ec = esub.add_parser("close"); ec.add_argument("id", type=int)
     se.set_defaults(func=cmd_escalation)
 

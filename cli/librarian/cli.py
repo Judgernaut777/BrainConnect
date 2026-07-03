@@ -11,6 +11,7 @@ import sys
 
 from wiki.db import Repo
 
+from . import adjudicate as adjudicatemod
 from . import extract as extractmod
 from . import triage as triagemod
 from .config import LibrarianConfig
@@ -78,6 +79,27 @@ def cmd_triage(args):
               "(see `wiki triage`).")
 
 
+def cmd_adjudicate(args):
+    cfg = LibrarianConfig.load()
+    with Repo.open() as repo:
+        rep = adjudicatemod.run(repo, cfg, only_unproposed=not args.all)
+        if _emit(rep, args.json):
+            return
+        if not rep["proposed"] and not rep["failed"]:
+            print("nothing to adjudicate — no open contradictions or escalations "
+                  "(or all already proposed; use --all to re-propose)")
+            return
+        print(f"adjudicate: {len(rep['proposed'])} proposal(s), "
+              f"{len(rep['failed'])} failed")
+        for d in rep["proposed"]:
+            print(f"  {d['kind']:<13} #{d['id']} (conf {d['confidence']:.2f}): "
+                  f"{d['proposal']}")
+        for f in rep["failed"]:
+            print(f"  ! {f['kind']} #{f['id']}: {f['error']}")
+        print("\nProposals are advisory — resolve/supersede/close stay human gates "
+              "(`wiki contradiction resolve`, `wiki escalation close`).")
+
+
 def cmd_status(args):
     cfg = LibrarianConfig.load()
     with Repo.open() as repo:
@@ -128,6 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="re-triage every pending claim, not just untriaged ones")
     addj(st)
     st.set_defaults(func=cmd_triage)
+
+    sa = sub.add_parser("adjudicate",
+                        help="draft proposals for open contradictions + escalations "
+                             "(advisory; never resolves/closes)")
+    sa.add_argument("--all", action="store_true",
+                    help="re-propose every open item, not just unproposed ones")
+    addj(sa)
+    sa.set_defaults(func=cmd_adjudicate)
 
     ss = sub.add_parser("status", help="show librarian config + pending backlog")
     addj(ss)

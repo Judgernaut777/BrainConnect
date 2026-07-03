@@ -84,7 +84,8 @@ CREATE TABLE escalations (
   id INTEGER PRIMARY KEY,
   source_id INTEGER NOT NULL REFERENCES sources(id),
   reason TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open'
+  status TEXT NOT NULL DEFAULT 'open',
+  proposal TEXT             -- librarian adjudicate draft (advisory; never closes)
 );
 
 CREATE TABLE pages (
@@ -222,4 +223,4 @@ ALL_DDL = CORE_DDL + EXT_DDL
 
 # User-version stamped on the DB. Keep in sync with migrate.latest_version()
 # (the migration runner carries existing DBs forward to this version).
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8

@@ -91,6 +91,9 @@ def main():
         "claim_id INTEGER REFERENCES claims(id), UNIQUE(src, rel, dst, claim_id));"
         "CREATE TABLE claim_entities (claim_id INTEGER NOT NULL REFERENCES claims(id), "
         "entity_id INTEGER NOT NULL REFERENCES entities(id), PRIMARY KEY (claim_id, entity_id));"
+        "CREATE TABLE escalations (id INTEGER PRIMARY KEY, "
+        "source_id INTEGER NOT NULL REFERENCES sources(id), reason TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'open');"
     )
     c.execute("INSERT INTO sources(hash, path, origin) VALUES ('h1','raw/x.md','clip')")
     c.execute("PRAGMA user_version=1")
@@ -104,6 +107,8 @@ def main():
     check("migrate v3 creates embeddings table", "embeddings" in _tbls)
     check("migrate v4 creates skills tables", {"skills", "skill_claims"} <= _tbls)
     check("migrate v5 creates skill_versions table", "skill_versions" in _tbls)
+    _esc_cols = {row[1] for row in c.execute("PRAGMA table_info(escalations)")}
+    check("migrate v8 adds escalations.proposal", "proposal" in _esc_cols)
     _skill_cols = {row[1] for row in c.execute("PRAGMA table_info(skills)")}
     check("migrate v5 adds skills.version column", "version" in _skill_cols)
     check("existing row gets default tags='[]'",
@@ -1592,6 +1597,85 @@ def main():
               len(bad_rep["failed"]) == 1 and not bad_rep["triaged"])
     finally:
         libclient._post_json = _t_orig
+
+    # ---------------- Librarian adjudicate (advisory; model stubbed) ---------
+    print("[librarian-adjudicate] proposals for open contradictions/escalations; "
+          "never resolves/closes")
+    from librarian import adjudicate as libadj
+
+    adj = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-adj-")))
+    write(adj / "config.toml", (adj / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub"\nbase_url = "http://stub/v1"\n')
+    acfg = _LibCfg.load(start=adj)
+    with Repo.open(start=adj) as r:
+        # a promoted claim + a contradicting session claim -> open contradiction
+        asid = ingest.capture(r, "a", "the sky is blue")
+        ingest.file_claims_data(r, asid, {
+            "source_id": asid, "summary": "s",
+            "claims": [{"text": "The sky is blue.", "confidence": 0.99,
+                        "entities": ["Sky"]}], "low_confidence": False})
+        gatemod.gate(r)
+        aclaim = r.one("SELECT id FROM claims WHERE source_id=?", (asid,))["id"]
+        review.promote(r, [aclaim])
+        bsid = ingest.capture(r, "a", "the sky is green")
+        ingest.file_claims_data(r, bsid, {
+            "source_id": bsid, "summary": "s2",
+            "claims": [{"text": "The sky is blue is false; it is green.",
+                        "confidence": 0.9, "entities": ["Sky"]}],
+            "low_confidence": False})
+        # ensure at least one open contradiction and one open escalation exist
+        r.ex("INSERT INTO contradictions(claim_a, claim_b, status) VALUES (?,?, 'open')",
+             (aclaim, aclaim))
+        r.ex("INSERT INTO escalations(source_id, reason, status) VALUES (?,?, 'open')",
+             (asid, "extractor returned low-confidence garble"))
+        r.conn.commit()
+        con_id = r.one("SELECT id FROM contradictions WHERE status='open' ORDER BY id")["id"]
+        esc_id = r.one("SELECT id FROM escalations WHERE status='open' ORDER BY id")["id"]
+
+    # v8 migration actually added the column on this live repo DB
+    with Repo.open(start=adj) as r:
+        ecols = {c["name"] for c in r.q("PRAGMA table_info(escalations)")}
+    check("escalations.proposal column present after migration", "proposal" in ecols)
+
+    adj_reply = {"proposal": "Claim A cites a stronger source; keep A, mark B stale. "
+                             "Human should confirm.", "confidence": 0.6}
+    def _a_stub(url, payload, headers, timeout):
+        return {"choices": [{"message": {"content": json.dumps(adj_reply)}}]}
+    _a_orig = libclient._post_json
+    libclient._post_json = _a_stub
+    try:
+        with Repo.open(start=adj) as r:
+            arep = libadj.run(r, acfg)
+        check("adjudicate produced at least one contradiction + one escalation proposal",
+              any(d["kind"] == "contradiction" for d in arep["proposed"])
+              and any(d["kind"] == "escalation" for d in arep["proposed"]))
+        with Repo.open(start=adj) as r:
+            cprop = r.one("SELECT proposal, status FROM contradictions WHERE id=?", (con_id,))
+            eprop = r.one("SELECT proposal, status FROM escalations WHERE id=?", (esc_id,))
+        check("contradiction proposal written to contradictions.proposal",
+              bool(cprop["proposal"]) and cprop["proposal"] == adj_reply["proposal"])
+        check("escalation proposal written to escalations.proposal",
+              bool(eprop["proposal"]) and eprop["proposal"] == adj_reply["proposal"])
+        check("adjudicate NEVER resolves the contradiction (still open)",
+              cprop["status"] == "open")
+        check("adjudicate NEVER closes the escalation (still open)",
+              eprop["status"] == "open")
+        with Repo.open(start=adj) as r:
+            arep2 = libadj.run(r, acfg)
+        check("adjudicate is idempotent (unproposed-only skips already-proposed)",
+              not arep2["proposed"])
+        # a malformed proposal (empty) is rejected by the contract
+        libclient._post_json = lambda *a: {"choices": [{"message": {"content":
+            json.dumps({"proposal": "", "confidence": 0.5})}}]}
+        with Repo.open(start=adj) as r:
+            r.ex("INSERT INTO escalations(source_id, reason, status) VALUES (?,?, 'open')",
+                 (asid, "another escalation"))
+            r.conn.commit()
+            bad_adj = libadj.run(r, acfg)
+        check("adjudicate rejects an empty proposal via the contract",
+              len(bad_adj["failed"]) == 1 and not bad_adj["proposed"])
+    finally:
+        libclient._post_json = _a_orig
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
