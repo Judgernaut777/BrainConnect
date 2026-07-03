@@ -15,6 +15,7 @@ from . import adjudicate as adjudicatemod
 from . import extract as extractmod
 from . import synthesize as synthesizemod
 from . import triage as triagemod
+from . import watch as watchmod
 from .config import LibrarianConfig
 
 
@@ -132,6 +133,17 @@ def cmd_synthesize(args):
               "(`wiki skill approve`); the librarian never approves or installs.")
 
 
+def cmd_watch(args):
+    rep = watchmod.run(interval=args.interval, once=args.once)
+    if _emit(rep, args.json):
+        return
+    if args.once:
+        print(f"watch --once: dropped {rep['dropped']}, "
+              f"bookmarks_added {rep['bookmarks_added']}, extracted {rep['extracted']}")
+    else:
+        print("watch stopped")
+
+
 def cmd_status(args):
     cfg = LibrarianConfig.load()
     with Repo.open() as repo:
@@ -199,6 +211,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="include skill drafting (part 2); --no-skills to skip it")
     addj(sy)
     sy.set_defaults(func=cmd_synthesize)
+
+    sw = sub.add_parser("watch",
+                        help="watch the drop folder + bookmark files; ingest and "
+                             "extract whatever lands, until Ctrl-C")
+    sw.add_argument("--interval", type=int, default=5,
+                    help="poll interval in seconds (default 5)")
+    sw.add_argument("--once", action="store_true",
+                    help="do a single scan pass and return (no loop)")
+    addj(sw)
+    sw.set_defaults(func=cmd_watch)
 
     ss = sub.add_parser("status", help="show librarian config + pending backlog")
     addj(ss)

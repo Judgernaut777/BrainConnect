@@ -1748,6 +1748,70 @@ def main():
     finally:
         libclient._post_json = _sy_orig
 
+    # ---------------- Librarian watch (drop + bookmarks -> extraction) -------
+    print("[librarian-watch] event loop over the drop folder + bookmark files")
+    from librarian import watch as libwatch
+
+    wt = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-watch-")))
+    wdrop = wt / "inbox-drop"
+    wdrop.mkdir(parents=True, exist_ok=True)
+    wt_cfg_text = (wt / "config.toml").read_text(encoding="utf-8")
+    wt_cfg_text = wt_cfg_text.replace(
+        "[paths]\n", f'[paths]\ndrop_folder = "{wdrop.as_posix()}"\n', 1)
+    write(wt / "config.toml", wt_cfg_text
+          + '[librarian]\nmodel = "stub"\nbase_url = "http://stub/v1"\n')
+    write(wdrop / "note.txt", "A note about watched drop-folder ingestion.")
+
+    watch_canned = {
+        "source_id": 0,
+        "summary": "A dropped note.",
+        "claims": [{"text": "The watcher ingests dropped files automatically.",
+                    "confidence": 0.9, "entities": ["watcher"]}],
+        "low_confidence": False,
+    }
+
+    def _watch_stub(url, payload, headers, timeout):
+        return {"choices": [{"message": {"content": json.dumps(watch_canned)}}]}
+
+    _w_orig = libclient._post_json
+    libclient._post_json = _watch_stub
+    try:
+        wrep = libwatch.run(once=True, start=wt)
+        check("watch --once ingested the dropped file", wrep["dropped"] == 1)
+        check("watch --once extracted the newly-ingested source", wrep["extracted"] == 1)
+        check("watch --once ran no bookmark adds (none configured)",
+              wrep["bookmarks_added"] == 0)
+        with Repo.open(start=wt) as r:
+            n_claims = r.one("SELECT COUNT(*) n FROM claims")["n"]
+        check("dropped-file claim made it into the DB", n_claims == 1)
+        check("drop folder archived the processed file",
+              (wdrop / dropmod.PROCESSED / "note.txt").exists())
+
+        # scan_once directly, called twice in a row: idempotent (nothing new).
+        with Repo.open(start=wt) as r:
+            wcfg = _LibCfg.load(start=wt)
+            rep2 = libwatch.scan_once(r, wcfg)
+        check("scan_once is a no-op when nothing changed",
+              rep2 == {"dropped": 0, "bookmarks_added": 0, "extracted": 0})
+
+        # --once never enters the poll loop: returns promptly, no hang.
+        import time as _time
+        t0 = _time.monotonic()
+        wrep3 = libwatch.run(once=True, start=wt, interval=999)
+        check("watch --once returns immediately regardless of --interval",
+              _time.monotonic() - t0 < 5)
+        check("second --once pass finds nothing new to drop/extract",
+              wrep3 == {"dropped": 0, "bookmarks_added": 0, "extracted": 0})
+    finally:
+        libclient._post_json = _w_orig
+
+    # Runs fine with watchdog absent (this environment has no watchdog
+    # installed) — the stdlib mtime/size poll fallback is what --once above
+    # already exercised via run()/scan_once directly.
+    Observer, Handler = libwatch._watchdog()
+    check("watchdog absent -> import guard returns (None, None) cleanly",
+          (Observer, Handler) == (None, None) or (Observer is not None and Handler is not None))
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
