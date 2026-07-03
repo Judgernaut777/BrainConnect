@@ -32,10 +32,15 @@ Stored on `sources.origin` and copied onto `claims.origin` at extraction time.
   never touch disk (the gate). `approve` is human-only (skills are instructions).
 
 ## Entity `kind`
-`person | org | tool | concept | event | place`. Extraction JSON carries no
-kind, so `wiki file-claims` creates new entities as `concept`; the maintain pass
-corrects kinds. Pages route by kind: `concept` → `wiki/concepts/`, everything
-else → `wiki/entities/`.
+`person | org | tool | concept | event | place`. A claim's `entities` (and a
+relation's `src`/`dst`) may each be given as a plain name string — kind
+defaults to `concept` — or as an object `{"name": str, "kind": str}` with an
+explicit kind from the set above. `wiki file-claims` creates new entities with
+the given (or defaulted) kind; if an entity already exists with the default
+`concept` kind and a concrete kind arrives later, it is upgraded in place (a
+concrete kind is never downgraded back to `concept`). The maintain pass may
+still correct kinds by hand. Pages route by kind: `concept` → `wiki/concepts/`,
+everything else → `wiki/entities/`.
 
 ## Relation vocabulary (`relations.rel`)
 Open vocabulary; common verbs: `uses`, `part_of`, `contradicts`, `influences`,

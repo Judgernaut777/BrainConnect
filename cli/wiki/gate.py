@@ -16,6 +16,11 @@ from . import render, util
 CORROBORATION_JACCARD = 0.5
 
 
+class GateCheckError(Exception):
+    """A safety check's FTS query failed. Callers must fail closed (hold the
+    claim) rather than treat the failure as "check passed"."""
+
+
 def _has_open_contradiction(repo: Repo, cid: int) -> bool:
     return bool(repo.one(
         "SELECT 1 FROM contradictions WHERE status='open' AND (claim_a=? OR claim_b=?)",
@@ -23,15 +28,21 @@ def _has_open_contradiction(repo: Repo, cid: int) -> bool:
 
 
 def _corroborating_sources(repo: Repo, claim) -> int:
-    """Distinct source ids (incl. this claim's) asserting a similar fact."""
+    """Distinct source ids (incl. this claim's) asserting a similar fact.
+
+    Raises GateCheckError (after logging) if the FTS query fails, so the
+    caller holds the claim instead of silently treating it as uncorroborated-
+    but-otherwise-fine — same fail-closed contract as `_conflicts_with_promoted`.
+    """
     try:
         rows = repo.q(
             """SELECT c.id, c.text, c.source_id FROM claims_fts f
                JOIN claims c ON c.id = f.rowid
                WHERE claims_fts MATCH ? AND c.status IN ('promoted','pending')""",
             (util.fts_or_query(claim["text"]),))
-    except Exception:
-        rows = []
+    except Exception as e:
+        repo.log("gate", f"corroboration FTS query failed for claim #{claim['id']}: {e}")
+        raise GateCheckError(f"corroboration query failed: {e}") from e
     sources = {claim["source_id"]}
     for r in rows:
         if r["id"] == claim["id"]:
@@ -42,18 +53,18 @@ def _corroborating_sources(repo: Repo, claim) -> int:
 
 
 def _conflicts_with_promoted(repo: Repo, claim) -> bool:
+    """Raises GateCheckError (after logging) if the FTS query fails, so the
+    caller fails closed (holds the claim) instead of promoting on the
+    assumption that "no rows" means "no conflict"."""
     try:
         rows = repo.q(
             """SELECT c.text FROM claims_fts f JOIN claims c ON c.id = f.rowid
                WHERE claims_fts MATCH ? AND c.status='promoted'""",
             (util.fts_or_query(claim["text"]),))
-    except Exception:
-        rows = []
-    neg = util.has_negation(claim["text"])
-    for r in rows:
-        if util.jaccard(claim["text"], r["text"]) >= 0.4 and util.has_negation(r["text"]) != neg:
-            return True
-    return False
+    except Exception as e:
+        repo.log("gate", f"conflict FTS query failed for claim #{claim['id']}: {e}")
+        raise GateCheckError(f"conflict query failed: {e}") from e
+    return any(util.polarity_conflict(claim["text"], r["text"]) for r in rows)
 
 
 def gate(repo: Repo) -> dict:
@@ -66,11 +77,17 @@ def gate(repo: Repo) -> dict:
             reasons.append(f"confidence {c['confidence']:.2f} < {thresh}")
         if _has_open_contradiction(repo, c["id"]):
             reasons.append("open contradiction")
-        corroborated = c["origin"] == "clip" or _corroborating_sources(repo, c) >= 2
-        if not corroborated:
-            reasons.append("not corroborated (need 2 sources or origin=clip)")
-        if _conflicts_with_promoted(repo, c):
-            reasons.append("conflicts with promoted claim")
+        if c["origin"] != "clip":
+            try:
+                if _corroborating_sources(repo, c) < 2:
+                    reasons.append("not corroborated (need 2 sources or origin=clip)")
+            except GateCheckError as e:
+                reasons.append(f"corroboration check failed — held fail-closed: {e}")
+        try:
+            if _conflicts_with_promoted(repo, c):
+                reasons.append("conflicts with promoted claim")
+        except GateCheckError as e:
+            reasons.append(f"conflict check failed — held fail-closed: {e}")
         if reasons:
             held.append({"id": c["id"], "reasons": reasons})
             continue

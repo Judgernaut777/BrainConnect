@@ -140,9 +140,14 @@ def fetch_for(repo: Repo, url: str, qid: int) -> int:
     # evidence filing verifies before moving the artifact).
     dest.write_bytes(content)
     rel = repo.rel(dest)
-    sid = ingest._register_source(
-        repo, content=content, rel_path=rel, title=title, url=url,
-        origin="autoresearch", fetched_at=util.now_iso())
+    try:
+        sid = ingest._register_source(
+            repo, content=content, rel_path=rel, title=title, url=url,
+            origin="autoresearch", fetched_at=util.now_iso())
+    except ingest.IngestError:
+        # refused (exact-hash duplicate) — leave no stray file behind
+        dest.unlink(missing_ok=True)
+        raise
     _record(repo, "fetch", qid)
     repo.finalize("fetch", f"source #{sid} autoresearch for q#{qid}: {url}")
     return sid

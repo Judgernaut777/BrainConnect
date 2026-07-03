@@ -110,3 +110,15 @@ def jaccard(a: str, b: str) -> float:
     if not sa or not sb:
         return 0.0
     return len(sa & sb) / len(sa | sb)
+
+
+# Shared "polarity conflict" heuristic: two texts are similar enough (by token
+# Jaccard) to be about the same fact, but assert opposite polarity (one negated,
+# one not). Used by both ingest._detect_contradictions (new claim vs promoted)
+# and gate._conflicts_with_promoted (pending claim vs promoted) — one definition,
+# one threshold, so the two call sites can't silently drift apart.
+CONTRADICTION_JACCARD = 0.4
+
+
+def polarity_conflict(a: str, b: str) -> bool:
+    return jaccard(a, b) >= CONTRADICTION_JACCARD and has_negation(a) != has_negation(b)

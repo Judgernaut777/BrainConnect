@@ -35,9 +35,13 @@ Rules:
   understandable without the source in front of you.
 - confidence is YOUR estimate (0.0-1.0) that the claim faithfully represents
   what the source asserts. Use low values for hedged or speculative statements.
-- entities are the named things a claim is about (people, orgs, tools, concepts).
-- relations connect entity names with a short verb-like `rel` (e.g. "created",
-  "depends on", "contradicts").
+- entities are the named things a claim is about. Give each as a plain name
+  string (kind defaults to "concept"), or as an object {"name": ..., "kind":
+  ...} when you know the kind — one of person, org, tool, event, place,
+  concept.
+- relations connect two entities (src/dst — each a name string or {"name",
+  "kind"} object, same rule as above) with a short verb-like `rel` (e.g.
+  "created", "depends on", "contradicts").
 - Set low_confidence=true if the source is garbled, truncated, or you are unsure
   of the extraction overall; a human will then review it.
 - proposed_questions: up to 3 follow-up research questions the source raises.
@@ -52,8 +56,9 @@ CONTRACT = """Return a JSON object exactly in this shape:
       "text": "one atomic claim, <= 400 chars",
       "confidence": 0.0,
       "location": "optional pointer within the source (section, timestamp)",
-      "entities": ["Entity Name", "..."],
-      "relations": [{"src": "Entity A", "rel": "verb phrase", "dst": "Entity B"}]
+      "entities": ["Entity Name", {"name": "Entity With Known Kind", "kind": "tool"}],
+      "relations": [{"src": "Entity A", "rel": "verb phrase",
+                      "dst": {"name": "Entity B", "kind": "org"}}]
     }
   ],
   "low_confidence": false,

@@ -1065,6 +1065,227 @@ def main():
     check("evidence file --all skips the failed stub", failed_id not in filed_ids)
     check("evidence file --all reports no errors", not any(row.get("error") for row in res))
 
+    # ---------------- Group A (#5): no orphaned files on refused duplicates ---
+    print("[group-a #5] refused exact-hash duplicates leave no stray file on disk")
+    gatmp = Path(tempfile.mkdtemp(prefix="wikibrain-orphan-"))
+    garoot = make_repo(gatmp)
+
+    # add(url): same content, different URLs -> second is refused as a hash dup.
+    _ofetch = fetchmod.fetch_url
+    fetchmod.fetch_url = lambda url, *a, **k: ("# same content A\n", None)
+    try:
+        with Repo.open(start=garoot) as r:
+            ingest.add(r, "https://example.org/dup-a", origin="clip")
+        before = set((garoot / "raw").iterdir())
+        dup_raised = False
+        try:
+            with Repo.open(start=garoot) as r:
+                ingest.add(r, "https://example.org/dup-b", origin="clip")
+        except ingest.IngestError:
+            dup_raised = True
+        after = set((garoot / "raw").iterdir())
+        check("add(url) exact-duplicate content is refused", dup_raised)
+        check("add(url) refused duplicate leaves no stray file in raw/", before == after)
+    finally:
+        fetchmod.fetch_url = _ofetch
+
+    # transcribe: same content, different targets -> second is refused.
+    _otr = extractmod.transcribe
+    extractmod.transcribe = lambda target, whisper_model="base": ("# same content B\n", None)
+    try:
+        with Repo.open(start=garoot) as r:
+            ingest.transcribe(r, "https://youtu.be/dupvid-a")
+        before_t = set((garoot / "raw").iterdir())
+        dup_raised_t = False
+        try:
+            with Repo.open(start=garoot) as r:
+                ingest.transcribe(r, "https://youtu.be/dupvid-b")
+        except ingest.IngestError:
+            dup_raised_t = True
+        after_t = set((garoot / "raw").iterdir())
+        check("transcribe exact-duplicate content is refused", dup_raised_t)
+        check("transcribe refused duplicate leaves no stray file in raw/", before_t == after_t)
+    finally:
+        extractmod.transcribe = _otr
+
+    # gather.fetch_for: same content, different URLs -> second is refused.
+    _ofetch2 = fetchmod.fetch_url
+    fetchmod.fetch_url = lambda url, *a, **k: ("# same content C\n", None)
+    try:
+        with Repo.open(start=garoot) as r:
+            gqid = queuemod.add(r, "orphan-file dup question?")
+        with Repo.open(start=garoot) as r:
+            gather.fetch_for(r, "https://example.org/gdup-a", gqid)
+        before_g = set((garoot / "raw").iterdir())
+        dup_raised_g = False
+        try:
+            with Repo.open(start=garoot) as r:
+                gather.fetch_for(r, "https://example.org/gdup-b", gqid)
+        except ingest.IngestError:
+            dup_raised_g = True
+        after_g = set((garoot / "raw").iterdir())
+        check("gather.fetch_for exact-duplicate content is refused", dup_raised_g)
+        check("gather.fetch_for refused duplicate leaves no stray file in raw/",
+              before_g == after_g)
+    finally:
+        fetchmod.fetch_url = _ofetch2
+
+    # ---------------- Group A (#11): entity kind extraction contract ----------
+    print("[group-a #11] entity/relation kind: string | {name,kind}, upgrade-not-downgrade")
+    ektmp = Path(tempfile.mkdtemp(prefix="wikibrain-entkind-"))
+    ekroot = make_repo(ektmp)
+    write(ekroot / "ek1.md", "Entity kind source one.")
+    with Repo.open(start=ekroot) as r:
+        s1, _ = ingest.add(r, str(ekroot / "ek1.md"), origin="clip", title="EK1")
+        j1 = {"source_id": s1, "summary": "s",
+              "claims": [{"text": "Plainname is mentioned here.", "confidence": 0.8,
+                          "entities": ["Plainname"], "relations": []}],
+              "low_confidence": False}
+        ingest.file_claims_data(r, s1, j1)
+        plain_kind = r.one("SELECT kind FROM entities WHERE name='Plainname'")["kind"]
+    check("plain-string entity still defaults to kind=concept (backward compatible)",
+          plain_kind == "concept")
+
+    write(ekroot / "ek2.md", "Entity kind source two.")
+    with Repo.open(start=ekroot) as r:
+        s2, _ = ingest.add(r, str(ekroot / "ek2.md"), origin="clip", title="EK2")
+        j2 = {"source_id": s2, "summary": "s",
+              "claims": [{"text": "Ada Lovelace worked with the Analytical Engine.",
+                          "confidence": 0.9,
+                          "entities": [{"name": "Ada Lovelace", "kind": "person"}],
+                          "relations": [{"src": {"name": "Ada Lovelace", "kind": "person"},
+                                         "rel": "worked_on",
+                                         "dst": {"name": "Analytical Engine", "kind": "tool"}}]}],
+              "low_confidence": False}
+        ingest.file_claims_data(r, s2, j2)
+        ada_kind = r.one("SELECT kind FROM entities WHERE name='Ada Lovelace'")["kind"]
+        engine_kind = r.one("SELECT kind FROM entities WHERE name='Analytical Engine'")["kind"]
+    check("object-form entity carries its kind through (person)", ada_kind == "person")
+    check("object-form relation dst carries its kind through (tool)", engine_kind == "tool")
+
+    # upgrade: a default 'concept' entity is upgraded when a concrete kind
+    # arrives later, but a concrete kind is never downgraded back to 'concept'.
+    write(ekroot / "ek3.md", "Entity kind source three.")
+    with Repo.open(start=ekroot) as r:
+        s3, _ = ingest.add(r, str(ekroot / "ek3.md"), origin="clip", title="EK3")
+        j3 = {"source_id": s3, "summary": "s",
+              "claims": [{"text": "Gadgetron is a project.", "confidence": 0.8,
+                          "entities": ["Gadgetron"], "relations": []}],
+              "low_confidence": False}
+        ingest.file_claims_data(r, s3, j3)
+        kind_before = r.one("SELECT kind FROM entities WHERE name='Gadgetron'")["kind"]
+    check("new entity via plain string starts as concept", kind_before == "concept")
+
+    write(ekroot / "ek4.md", "Entity kind source four.")
+    with Repo.open(start=ekroot) as r:
+        s4, _ = ingest.add(r, str(ekroot / "ek4.md"), origin="clip", title="EK4")
+        j4 = {"source_id": s4, "summary": "s",
+              "claims": [{"text": "Gadgetron is a software tool.", "confidence": 0.85,
+                          "entities": [{"name": "Gadgetron", "kind": "tool"}],
+                          "relations": []}],
+              "low_confidence": False}
+        ingest.file_claims_data(r, s4, j4)
+        kind_after = r.one("SELECT kind FROM entities WHERE name='Gadgetron'")["kind"]
+    check("existing default-concept entity is upgraded when a concrete kind arrives",
+          kind_after == "tool")
+
+    write(ekroot / "ek5.md", "Entity kind source five.")
+    with Repo.open(start=ekroot) as r:
+        s5, _ = ingest.add(r, str(ekroot / "ek5.md"), origin="clip", title="EK5")
+        j5 = {"source_id": s5, "summary": "s",
+              "claims": [{"text": "Gadgetron is referenced again.", "confidence": 0.8,
+                          "entities": ["Gadgetron"], "relations": []}],
+              "low_confidence": False}
+        ingest.file_claims_data(r, s5, j5)
+        kind_final = r.one("SELECT kind FROM entities WHERE name='Gadgetron'")["kind"]
+    check("a concrete kind is never downgraded back to concept", kind_final == "tool")
+
+    # invalid kind is rejected by validation
+    write(ekroot / "ek6.md", "Entity kind source six.")
+    with Repo.open(start=ekroot) as r:
+        s6, _ = ingest.add(r, str(ekroot / "ek6.md"), origin="clip", title="EK6")
+    bad_kind_rejected = False
+    jbad = {"source_id": s6, "summary": "s",
+            "claims": [{"text": "Bad kind entity.", "confidence": 0.8,
+                        "entities": [{"name": "Nope", "kind": "spaceship"}],
+                        "relations": []}],
+            "low_confidence": False}
+    try:
+        with Repo.open(start=ekroot) as r:
+            ingest.file_claims_data(r, s6, jbad)
+    except ingest.IngestError:
+        bad_kind_rejected = True
+    check("entity object with an out-of-vocabulary kind is rejected", bad_kind_rejected)
+
+    # ---------------- Group A (#12): fail-closed gate / logged detectors ------
+    print("[group-a #12] gate fails closed (not open) on FTS errors; ingest logs instead of swallowing")
+    from wiki.db import Repo as _RepoCls
+    _orig_repo_q = _RepoCls.q
+
+    def _boom_fts_q(self, sql, params=()):
+        if "claims_fts" in sql:
+            raise RuntimeError("simulated FTS index corruption")
+        return _orig_repo_q(self, sql, params)
+
+    _RepoCls.q = _boom_fts_q
+    try:
+        # gate: a broken FTS query must hold the claim, not silently promote it.
+        fctmp = Path(tempfile.mkdtemp(prefix="wikibrain-ftsgate-"))
+        fcroot = make_repo(fctmp)
+        write(fcroot / "fc.md", "FC")
+        with Repo.open(start=fcroot) as r:
+            fcsid, _ = ingest.add(r, str(fcroot / "fc.md"), origin="bookmark", title="FC")
+            r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
+                 "VALUES ('The gizmo is fully supported.', ?, 0.99, 'bookmark', 'pending', "
+                 "'2026-01-01T00:00:00Z')", (fcsid,))
+            r.conn.commit()
+            grep = gatemod.gate(r)
+            fcst = r.one("SELECT status FROM claims WHERE source_id=?", (fcsid,))["status"]
+        check("claim held (NOT auto-promoted) when the FTS safety check errors (fail-closed)",
+              fcst == "pending")
+        check("held reason cites the fail-closed FTS failure",
+              any("fail-closed" in reason for h in grep["held"] for reason in h["reasons"]))
+        fclog = (fcroot / "log.md").read_text(encoding="utf-8")
+        check("gate logs the FTS query failure to log.md", "FTS query failed" in fclog)
+
+        # ingest-side detectors: a broken FTS query must be logged, not swallowed silently.
+        idtmp = Path(tempfile.mkdtemp(prefix="wikibrain-ftsingest-"))
+        idroot = make_repo(idtmp)
+        write(idroot / "seed.md", "Seed content.")
+        write(idroot / "claimsrc.md", "Claim source content.")
+        with Repo.open(start=idroot) as r:
+            _, warns = ingest.add(r, str(idroot / "seed.md"), origin="clip",
+                                  title="alpha bravo charlie")
+            csid, _ = ingest.add(r, str(idroot / "claimsrc.md"), origin="clip",
+                                 title="Claim source delta")
+            cj = {"source_id": csid, "summary": "s",
+                  "claims": [{"text": "The widget does not work offline.", "confidence": 0.9,
+                              "entities": ["Widget"], "relations": []}],
+                  "low_confidence": False}
+            idres = ingest.file_claims_data(r, csid, cj)
+        check("add() still succeeds despite a broken near-dupe FTS query (degrades, no crash)",
+              isinstance(warns, list))
+        check("file-claims still succeeds despite a broken contradiction FTS query",
+              idres["claims"] == 1)
+        idlog = (idroot / "log.md").read_text(encoding="utf-8")
+        check("near-dupe FTS failure logged to log.md", "near-dupe FTS query failed" in idlog)
+        check("contradiction FTS query failure logged to log.md",
+              "contradiction FTS query failed" in idlog)
+    finally:
+        _RepoCls.q = _orig_repo_q
+
+    # ---------------- Group A (polish): shared polarity-conflict helper -------
+    print("[group-a polish] shared polarity-conflict heuristic (ingest + gate dedup)")
+    check("CONTRADICTION_JACCARD threshold unchanged (0.4)", _u.CONTRADICTION_JACCARD == 0.4)
+    check("polarity_conflict flags a near-dup opposite-polarity pair",
+          _u.polarity_conflict("The cache is enabled by default.",
+                               "The cache is not enabled by default.") is True)
+    check("polarity_conflict ignores a near-dup same-polarity pair",
+          _u.polarity_conflict("The cache is enabled by default.",
+                               "The cache is enabled by default now.") is False)
+    check("polarity_conflict ignores dissimilar texts regardless of polarity",
+          _u.polarity_conflict("The cache is enabled.", "Totally unrelated statement.") is False)
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

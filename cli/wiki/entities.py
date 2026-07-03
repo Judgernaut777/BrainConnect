@@ -26,8 +26,14 @@ def get_or_create_entity(repo: Repo, name: str, kind: str = "concept") -> int:
     name = name.strip()
     if not name:
         raise ValueError("entity name cannot be empty")
+    if kind not in ENTITY_KINDS:
+        kind = "concept"
     existing = find_entity(repo, name)
     if existing:
+        # A concrete kind arriving for a previously-defaulted "concept" entity
+        # upgrades it in place; an already-concrete kind is never downgraded.
+        if existing["kind"] == "concept" and kind != "concept":
+            repo.ex("UPDATE entities SET kind = ? WHERE id = ?", (kind, existing["id"]))
         return existing["id"]
     cur = repo.ex(
         "INSERT INTO entities(name, kind, aliases) VALUES (?, ?, '[]')",

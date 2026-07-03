@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from .db import Repo
-from .entities import get_or_create_entity
+from .entities import get_or_create_entity, ENTITY_KINDS
 from . import fetch, util, extract, evidence
 
 
@@ -57,8 +57,8 @@ def _near_dupe_warnings(repo: Repo, title: str | None, url: str | None) -> list[
                         "warning: existing claims match this source's title "
                         "(possible near-duplicate)"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                repo.log("ingest", f"near-dupe FTS query failed for title {title!r}: {e}")
     return warns
 
 
@@ -78,8 +78,13 @@ def add(repo: Repo, target: str, *, origin: str = "clip",
         dest.write_bytes(content)
         rel = repo.rel(dest)
         warns = _near_dupe_warnings(repo, title, target)
-        sid = _register_source(repo, content=content, rel_path=rel, title=title,
-                               url=target, origin=origin, fetched_at=util.now_iso())
+        try:
+            sid = _register_source(repo, content=content, rel_path=rel, title=title,
+                                   url=target, origin=origin, fetched_at=util.now_iso())
+        except IngestError:
+            # refused (exact-hash duplicate) — leave no stray file behind
+            dest.unlink(missing_ok=True)
+            raise
     else:
         src = Path(target).expanduser()
         if not src.exists():
@@ -136,10 +141,15 @@ def transcribe(repo: Repo, target: str, *, whisper_model: str = "base") -> int:
     # (Windows write_text emits CRLF and would break sources.hash).
     dest.write_bytes(content)
     url = target if fetch.is_url(target) else None
-    sid = _register_source(
-        repo, content=content, rel_path=repo.rel(dest), title=title, url=url,
-        origin="transcript", fetched_at=util.now_iso() if url else None,
-        mime_type="text/plain")
+    try:
+        sid = _register_source(
+            repo, content=content, rel_path=repo.rel(dest), title=title, url=url,
+            origin="transcript", fetched_at=util.now_iso() if url else None,
+            mime_type="text/plain")
+    except IngestError:
+        # refused (exact-hash duplicate) — leave no stray file behind
+        dest.unlink(missing_ok=True)
+        raise
     repo.finalize("transcribe", f"source #{sid} transcript: {target}")
     return sid
 
@@ -150,6 +160,27 @@ _MACHINE_ORIGINS = ("autoresearch",)
 
 def _is_machine_origin(origin: str) -> bool:
     return origin in _MACHINE_ORIGINS or origin.startswith("session/")
+
+
+def _is_valid_entity_ref(e) -> bool:
+    """An entity/relation-endpoint ref is EITHER a plain name string (kind
+    defaults to 'concept') OR an object {"name": str, "kind": str} with kind
+    in entities.ENTITY_KINDS."""
+    if isinstance(e, str):
+        return bool(e.strip())
+    if isinstance(e, dict):
+        name = e.get("name")
+        kind = e.get("kind", "concept")
+        return (isinstance(name, str) and bool(name.strip())
+                and isinstance(kind, str) and kind in ENTITY_KINDS)
+    return False
+
+
+def _entity_ref(e) -> tuple[str, str]:
+    """Normalize a validated entity/relation-endpoint ref to (name, kind)."""
+    if isinstance(e, dict):
+        return e["name"].strip(), e.get("kind", "concept")
+    return e.strip(), "concept"
 
 
 def _validate(data: dict, source_id: int) -> None:
@@ -186,8 +217,9 @@ def _validate(data: dict, source_id: int) -> None:
         if loc is not None and not isinstance(loc, str):
             fail(f"{where}.location must be a string or omitted")
         ents = c.get("entities", [])
-        if not isinstance(ents, list) or not all(isinstance(e, str) for e in ents):
-            fail(f"{where}.entities must be a list of strings")
+        if not isinstance(ents, list) or not all(_is_valid_entity_ref(e) for e in ents):
+            fail(f"{where}.entities must be a list of name strings or "
+                 f"{{name, kind}} objects (kind in {sorted(ENTITY_KINDS)})")
         rels = c.get("relations", [])
         if not isinstance(rels, list):
             fail(f"{where}.relations must be a list")
@@ -195,9 +227,12 @@ def _validate(data: dict, source_id: int) -> None:
             rw = f"{where}.relations[{j}]"
             if not isinstance(r, dict):
                 fail(f"{rw} must be an object")
-            for k in ("src", "rel", "dst"):
-                if not isinstance(r.get(k), str) or not r[k].strip():
-                    fail(f"{rw}.{k} must be a non-empty string")
+            for k in ("src", "dst"):
+                if not _is_valid_entity_ref(r.get(k)):
+                    fail(f"{rw}.{k} must be a name string or "
+                         f"{{name, kind}} object (kind in {sorted(ENTITY_KINDS)})")
+            if not isinstance(r.get("rel"), str) or not r["rel"].strip():
+                fail(f"{rw}.rel must be a non-empty string")
     lc = data.get("low_confidence", False)
     if not isinstance(lc, bool):
         fail("low_confidence must be a boolean")
@@ -216,7 +251,6 @@ def _detect_contradictions(repo: Repo, new_claim_id: int, text: str) -> int:
     """Open contradiction rows vs promoted claims that FTS-match with opposite
     polarity. Returns number of rows opened."""
     opened = 0
-    new_neg = util.has_negation(text)
     try:
         rows = repo.q(
             """SELECT c.id, c.text FROM claims_fts f
@@ -224,15 +258,14 @@ def _detect_contradictions(repo: Repo, new_claim_id: int, text: str) -> int:
                WHERE claims_fts MATCH ? AND c.status = 'promoted'""",
             (util.fts_or_query(text),),
         )
-    except Exception:
+    except Exception as e:
+        repo.log("ingest", f"contradiction FTS query failed for claim #{new_claim_id}: {e}")
         rows = []
     for r in rows:
         if r["id"] == new_claim_id:
             continue
-        if util.jaccard(text, r["text"]) < 0.4:
+        if not util.polarity_conflict(text, r["text"]):
             continue
-        if util.has_negation(r["text"]) == new_neg:
-            continue  # same polarity → not a contradiction
         repo.ex(
             "INSERT INTO contradictions(claim_a, claim_b, status) VALUES (?,?, 'open')",
             (r["id"], new_claim_id),
@@ -320,16 +353,19 @@ def file_claims_data(repo: Repo, source_id: int, data: dict, *,
         inserted_claims += 1
 
         ent_ids = {}
-        for ename in c.get("entities", []):
-            eid = get_or_create_entity(repo, ename)
+        for eref in c.get("entities", []):
+            ename, ekind = _entity_ref(eref)
+            eid = get_or_create_entity(repo, ename, ekind)
             ent_ids[ename.lower()] = eid
             repo.ex(
                 "INSERT OR IGNORE INTO claim_entities(claim_id, entity_id) VALUES (?,?)",
                 (cid, eid),
             )
         for r in c.get("relations", []):
-            sid_e = get_or_create_entity(repo, r["src"])
-            dst_e = get_or_create_entity(repo, r["dst"])
+            src_name, src_kind = _entity_ref(r["src"])
+            dst_name, dst_kind = _entity_ref(r["dst"])
+            sid_e = get_or_create_entity(repo, src_name, src_kind)
+            dst_e = get_or_create_entity(repo, dst_name, dst_kind)
             repo.ex(
                 """INSERT OR IGNORE INTO relations(src, rel, dst, claim_id)
                    VALUES (?,?,?,?)""",
