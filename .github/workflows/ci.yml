@@ -27,6 +27,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install core CLI (no optional extras)
         run: pip install ./cli
+      - name: Entry-point smoke
+        # Catches packaging / console-script breakage (both binaries import and
+        # their parsers build) that the acceptance suite alone would not.
+        run: |
+          wiki --help
+          wiki-librarian --help
       - name: Run acceptance suite
         # Pure Python, offline, temp DB. Also enforces: no API keys / no machine
         # paths in tracked files (the project's key-free guarantee).

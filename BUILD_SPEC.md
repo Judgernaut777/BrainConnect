@@ -618,3 +618,42 @@ tool handlers, the wiring is build-tested separately).
   `session/<harness>` source and never promotes.
 - Live wiring (with the `[mcp]` extra): the server registers all five tools,
   `--read-only` omits `brain_capture`, and a `brain_search` call round-trips JSON.
+
+## 14. The librarian — the model-bearing half (`cli/librarian/`)
+
+The `wiki` CLI makes **zero model calls** by design (§1, the billing + determinism
+boundary). The **librarian** is the counterpart: a *separate* package and console
+script (`wiki-librarian`) that performs the judgment passes a §7.2 maintain session
+would, using any OpenAI-compatible endpoint (local Ollama/LM Studio, or a hosted
+model whose key comes from an env var named in `[librarian]`, never the repo). It
+is a distinct process, so the `wiki` binary keeps its zero-model-call guarantee.
+
+**The invariants above are unchanged.** The librarian only ever produces `pending`
+claims, `proposal`/`recommendation` rows, and `draft` skills — it **never**
+promotes, resolves a contradiction, closes an escalation, or approves a skill.
+Those are human gates (§7). Its output is projected to pure-code `wiki` readers
+(`wiki triage`, `wiki contradiction/escalation list`, `wiki skill list`) for the
+human to act on.
+
+Passes (each a small validated JSON contract, one retry, per-task model routing):
+- `extract` / `catch-up` — pending source → extraction JSON → `file-claims`.
+  Optionally fired per-source at ingest time (`[librarian] auto_extract`).
+- `triage` — a promote/reject/hold recommendation per gate-held claim
+  (`claim_triage`, §schema v7).
+- `adjudicate` — proposed resolutions for open contradictions
+  (`contradictions.proposal`) and escalations (`escalations.proposal`, v8).
+- `synthesize` — drafts `pages.synthesis` prose (via the §4 `synthesis set` path)
+  and `draft` skills (§12); approval stays human.
+- `maintain` — one command chaining catch-up → triage → adjudicate → synthesize
+  then the pure-code tail (render, digest, lint, health), behind an endpoint
+  reachability preflight.
+- `watch` — a loop over the drop folder + bookmark files (the two inputs that do
+  not pass through a `wiki` command), triggering ingest + `catch-up`.
+
+### Phase 8 (librarian) acceptance criteria
+- No `cli/librarian` pass writes a promotion/resolve/close/approve; each stores
+  only pending/proposal/draft rows (asserted in the offline suite with a stubbed
+  transport).
+- `wiki` (`cli/wiki/`) still contains zero model/network-billable calls.
+- `maintain` preflights reachability and degrades clearly when the endpoint is
+  down; a single failing stage does not abort the rest.

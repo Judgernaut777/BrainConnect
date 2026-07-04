@@ -130,6 +130,18 @@ claim. Machine-origin claims (`autoresearch`, `session/*`) are capped at
   skill pairs whose linked-claim sets or description+body text overlap (Jaccard ≥
   0.5); `wiki skill merge` reconciles them (human-gated).
 
+## Librarian tables (the model-bearing half; advisory only)
+The `wiki-librarian` process writes only PROPOSALS/RECOMMENDATIONS here — never
+truth. Both are read by pure-code `wiki` readers for the human gate.
+- `claim_triage(claim_id PK, recommendation, reason, confidence, model,
+  created_at)` (schema v7) — one row per pending claim, the librarian `triage`
+  pass's `promote | reject | hold` recommendation. Cascades away with the claim.
+  Surfaced by `wiki triage`; acting on it is still `wiki promote`/`wiki reject`.
+- `escalations.proposal` (schema v8) — a nullable column added to the existing
+  `escalations` table, holding the librarian `adjudicate` pass's suggested action
+  for a low-confidence source, mirroring `contradictions.proposal`. The pass never
+  closes the escalation; `wiki escalation close` stays human.
+
 ## CLI conventions
 Every mutating command commits, refreshes `db/dump.sql`, and appends a line to
 `log.md` (`## [YYYY-MM-DD HH:MM] <op> | <summary>`). Read-only commands do not.
