@@ -5,7 +5,7 @@ escalations, summary promotion. These are the judgment levers the morning gate
 from __future__ import annotations
 
 from .db import Repo
-from . import render, util
+from . import gate as gatemod, render, util
 
 
 def _require_claim(repo: Repo, cid: int):
@@ -84,6 +84,58 @@ def contradiction_propose(repo: Repo, cid: int, proposal: str) -> None:
         raise SystemExit(f"error: no contradiction #{cid}")
     repo.ex("UPDATE contradictions SET proposal = ? WHERE id = ?", (proposal, cid))
     repo.finalize("contradiction-propose", f"#{cid}")
+
+
+# A pure-code contradiction pre-filter (ZERO model calls) resolves the clear
+# cases so the librarian's model is spent only on genuinely even pairs — the
+# "newer AND more specific AND corroborated wins" heuristic from BUILD_SPEC. It
+# only DRAFTS a proposal (via contradiction_propose); it never resolves or
+# supersedes, exactly like the model pass.
+PREADJUDICATE_MIN_CORROBORATION = 2  # the winning side must itself be corroborated
+
+
+def _specificity(repo: Repo, claim) -> tuple[int, int]:
+    """Specificity proxy: (# linked entities, text length). More entities, then
+    longer text, reads as the more specific claim."""
+    n = repo.one("SELECT COUNT(*) AS n FROM claim_entities WHERE claim_id = ?",
+                 (claim["id"],))["n"]
+    return (n, len(claim["text"] or ""))
+
+
+def preadjudicate_contradiction(repo: Repo, row) -> dict:
+    """Deterministic resolution proposal for one open contradiction, or a
+    deferral. Returns {decided, proposal?, confidence?}.
+
+    Decides only when one claim STRICTLY dominates: strictly newer, strictly
+    more specific, at least as corroborated, and itself corroborated by >= 2
+    sources. Anything short of that (an even pair, a newer-but-vaguer claim, a
+    weakly-supported challenger) is left for the model. Fail-soft: any
+    corroboration-query error defers to the model rather than guessing.
+    """
+    undecided = {"decided": False}
+    a = repo.one("SELECT * FROM claims WHERE id = ?", (row["claim_a"],))
+    b = repo.one("SELECT * FROM claims WHERE id = ?", (row["claim_b"],))
+    if not a or not b:
+        return undecided
+    try:
+        corr = {a["id"]: gatemod._corroborating_sources(repo, a),
+                b["id"]: gatemod._corroborating_sources(repo, b)}
+    except gatemod.GateCheckError:
+        return undecided
+    spec = {a["id"]: _specificity(repo, a), b["id"]: _specificity(repo, b)}
+
+    for win, lose in ((a, b), (b, a)):
+        cw, cl = corr[win["id"]], corr[lose["id"]]
+        if (win["created_at"] > lose["created_at"]
+                and spec[win["id"]] > spec[lose["id"]]
+                and cw >= cl and cw >= PREADJUDICATE_MIN_CORROBORATION):
+            proposal = (
+                f"Supersede claim #{lose['id']} with the newer, more specific "
+                f"#{win['id']} ({spec[win['id']][0]} entities vs "
+                f"{spec[lose['id']][0]}, {cw} corroborating sources vs {cl}). "
+                f"Human confirms via `wiki supersede {lose['id']} {win['id']}`.")
+            return {"decided": True, "proposal": proposal, "confidence": 0.8}
+    return undecided
 
 
 def contradiction_resolve(repo: Repo, cid: int, resolution: str) -> None:

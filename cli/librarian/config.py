@@ -30,6 +30,14 @@ DEFAULTS = {
     # before the JSON, so they need generous headroom — keep this >= ~2048 for
     # those, or they truncate before emitting the answer.
     "max_tokens": 4096,
+    # Grammar-constrained decoding: send a JSON schema as `response_format:
+    # json_schema` so the server can only emit schema-valid JSON on the first
+    # pass. This is what makes a SMALL local CPU model reliable (the parse/retry
+    # loop mostly disappears). Auto-degrades: a server that rejects the param
+    # (4xx) transparently falls back to json_object, then plain — so it is safe
+    # to leave on everywhere. Honored by llama.cpp, vLLM, SGLang (xgrammar),
+    # OpenAI; ignored/degraded elsewhere.
+    "json_schema": True,
 }
 
 # Tasks the router knows about today. `extract` is implemented; the others are

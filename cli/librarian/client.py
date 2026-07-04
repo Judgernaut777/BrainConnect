@@ -92,11 +92,20 @@ def reachable(cfg: LibrarianConfig, *, timeout: int = 5) -> tuple[bool, str]:
 
 
 def chat(cfg: LibrarianConfig, task: str, messages: list[dict],
-         *, json_object: bool = True) -> str:
+         *, json_object: bool = True, schema: dict | None = None) -> str:
     """One chat completion for `task`; returns the assistant message content.
 
-    Tries `response_format: json_object` first (most servers honor it); if the
-    server rejects the parameter, retries once without it.
+    Constrained decoding, most-constrained first, degrading gracefully so a
+    small local model is reliable on servers that support it and nothing breaks
+    on servers that don't:
+      1. `response_format: json_schema` — when a `schema` is given AND the
+         `json_schema` config toggle is on (grammar-constrained: the server can
+         only emit schema-valid JSON; llama.cpp/vLLM/SGLang-xgrammar honor it).
+      2. `response_format: json_object` — when `json_object` is set (most
+         servers honor it).
+      3. plain — no response_format.
+    A server that rejects a variant with a 4xx just falls through to the next
+    (transient/5xx errors propagate, after the network-retry backoff).
     """
     url = str(cfg.get("base_url")).rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json", "User-Agent": UA}
@@ -113,17 +122,28 @@ def chat(cfg: LibrarianConfig, task: str, messages: list[dict],
         payload["max_tokens"] = int(max_tokens)
     timeout = int(cfg.get("timeout"))
     retries = int(cfg.get("network_retries") or 0)
+
+    formats: list[dict | None] = []
+    if schema is not None and bool(cfg.get("json_schema")):
+        formats.append({"type": "json_schema",
+                        "json_schema": {"name": task, "schema": schema, "strict": True}})
     if json_object:
+        formats.append({"type": "json_object"})
+    formats.append(None)  # plain — always the final fallback
+
+    last: ModelCallError | None = None
+    for rf in formats:
+        body = payload if rf is None else {**payload, "response_format": rf}
         try:
-            data = _post_resilient(url, {**payload, "response_format": {"type": "json_object"}},
-                                   headers, timeout, retries)
-            return _content(data)
+            return _content(_post_resilient(url, body, headers, timeout, retries))
         except ModelCallError as e:
-            # Some servers 400 on response_format; fall through and try plain.
-            if "HTTP 4" not in str(e):
-                raise
-    data = _post_resilient(url, payload, headers, timeout, retries)
-    return _content(data)
+            last = e
+            # A 4xx means the server rejected THIS response_format — try a looser
+            # one. Anything else (transient/5xx, already retried) must propagate.
+            if "HTTP 4" in str(e):
+                continue
+            raise
+    raise last  # only reached if the plain attempt itself 4xx'd
 
 
 # Reasoning models (Ornith, DeepSeek-R1, QwQ, …) emit a chain-of-thought preamble

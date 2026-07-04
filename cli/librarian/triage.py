@@ -19,6 +19,7 @@ import re
 
 from wiki.db import Repo
 from wiki import gate as gatemod
+from wiki import triage as wtriage
 from wiki import util
 
 from . import client
@@ -49,6 +50,21 @@ CONTRACT = """Return exactly:
   "confidence": 0.0,
   "reason": "one or two sentences justifying the recommendation"
 }"""
+
+# Grammar-constrained decoding target: mirrors _parse's accepted shape so a small
+# local model emits schema-valid JSON on the first pass (client.chat degrades if
+# the server can't constrain). additionalProperties:false + all-required keeps it
+# strict-mode clean (OpenAI) while still usable as a GBNF grammar (llama.cpp/vLLM).
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recommendation": {"type": "string", "enum": list(RECOMMENDATIONS)},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string", "minLength": 1},
+    },
+    "required": ["recommendation", "confidence", "reason"],
+    "additionalProperties": False,
+}
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
 
@@ -129,7 +145,7 @@ def triage_claim(repo: Repo, cfg: LibrarianConfig, claim_id: int) -> dict:
     last: Exception | None = None
     for _ in range(attempts):
         try:
-            content = client.chat(cfg, "triage", messages)
+            content = client.chat(cfg, "triage", messages, schema=SCHEMA)
             rec = _parse(content)
             _record(repo, claim_id, rec, cfg.model_for("triage"))
             return rec
@@ -155,14 +171,24 @@ def run(repo: Repo, cfg: LibrarianConfig, *, only_untriaged: bool = True) -> dic
                ORDER BY c.id""")
     else:
         rows = repo.q("SELECT id FROM claims WHERE status='pending' ORDER BY id")
-    done, failed = [], []
+    done, failed, decided = [], [], 0
     for r in rows:
+        # Hybrid pre-filter: resolve the clear cases in pure code (no model call).
+        claim = repo.one("SELECT * FROM claims WHERE id = ?", (r["id"],))
+        pre = wtriage.pretriage(repo, claim)
+        if pre["decided"]:
+            _record(repo, claim["id"], pre, "deterministic")
+            done.append({"claim_id": claim["id"], "model": "deterministic",
+                         "recommendation": pre["recommendation"],
+                         "reason": pre["reason"], "confidence": pre["confidence"]})
+            decided += 1
+            continue
         try:
             rec = triage_claim(repo, cfg, r["id"])
-            done.append({"claim_id": r["id"], **rec})
+            done.append({"claim_id": r["id"], "model": cfg.model_for("triage"), **rec})
         except TriageFailed as e:
             failed.append({"claim_id": r["id"], "error": str(e)})
     if done:
         repo.finalize("librarian-triage",
-                      f"{len(done)} triaged, {len(failed)} failed")
-    return {"triaged": done, "failed": failed}
+                      f"{len(done)} triaged ({decided} deterministic), {len(failed)} failed")
+    return {"triaged": done, "failed": failed, "deterministic": decided}

@@ -1600,6 +1600,152 @@ def main():
     finally:
         libclient._post_json = _t_orig
 
+    # ---------------- Determinize: pure-code pre-filter + constrained JSON ----
+    print("[librarian-determinize] pure-code pre-filter resolves clear cases; "
+          "the model runs only on the ambiguous residue")
+    from librarian import adjudicate as libadj
+    from wiki import util as _du
+
+    def _ins_claim(r, text, conf, origin, status, sid, when):
+        r.ex("INSERT INTO claims(text,source_id,confidence,origin,status,created_at) "
+             "VALUES(?,?,?,?,?,?)", (text, sid, conf, origin, status, when))
+        return r.one("SELECT id FROM claims WHERE text=? ORDER BY id DESC", (text,))["id"]
+
+    # --- Piece 1: deterministic pre-triage ---
+    det = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-det-")))
+    write(det / "config.toml", (det / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub"\nbase_url = "http://stub/v1"\n')
+    dcfg = _LibCfg.load(start=det)
+    now = _du.now_iso()
+    with Repo.open(start=det) as r:
+        r.ex("INSERT INTO sources(hash,path,origin) VALUES('deth','raw/d','clip')")
+        dsid = r.one("SELECT id FROM sources WHERE hash='deth'")["id"]
+        # a promoted claim + a pending near-duplicate of it (reject-decided)
+        _ins_claim(r, "Sodium chloride is common table salt", 0.9, "clip", "promoted", dsid, now)
+        did = _ins_claim(r, "Sodium chloride is common table salt", 0.5, "session/d", "pending", dsid, now)
+        # a corroborated clip near-miss just below the gate threshold (promote-decided)
+        mid = _ins_claim(r, "The east museum wing opened to the public recently", 0.80,
+                         "clip", "pending", dsid, now)
+        # a mid-confidence, uncorroborated claim (ambiguous -> left to the model)
+        aid = _ins_claim(r, "The branch library opens at nine on weekdays", 0.5,
+                         "session/d", "pending", dsid, now)
+        r.conn.commit()
+
+    calls = {"n": 0, "last": None}
+    def _det_stub(url, payload, headers, timeout):
+        calls["n"] += 1
+        calls["last"] = payload
+        return {"choices": [{"message": {"content": json.dumps(
+            {"recommendation": "hold", "confidence": 0.4, "reason": "needs a human"})}}]}
+    _d_orig = libclient._post_json
+    libclient._post_json = _det_stub
+    try:
+        with Repo.open(start=det) as r:
+            drep = libtriage.run(r, dcfg)
+        check("pre-triage: the model is called ONLY for the ambiguous residue (1 of 3)",
+              calls["n"] == 1)
+        check("pre-triage: run reports 2 deterministic decisions",
+              drep.get("deterministic") == 2)
+        with Repo.open(start=det) as r:
+            drow = r.one("SELECT * FROM claim_triage WHERE claim_id=?", (did,))
+            mrow = r.one("SELECT * FROM claim_triage WHERE claim_id=?", (mid,))
+            arow = r.one("SELECT * FROM claim_triage WHERE claim_id=?", (aid,))
+            dstat = r.one("SELECT status FROM claims WHERE id=?", (did,))["status"]
+        check("pre-triage: near-duplicate of a promoted claim is reject-decided by rule",
+              drow and drow["recommendation"] == "reject" and drow["model"] == "deterministic")
+        check("pre-triage: corroborated near-miss is promote-decided by rule",
+              mrow and mrow["recommendation"] == "promote" and mrow["model"] == "deterministic")
+        check("pre-triage: the ambiguous claim was decided by the model, not a rule",
+              arow and arow["model"] != "deterministic")
+        check("pre-triage: a deterministic decision never mutates claim status",
+              dstat == "pending")
+        # Piece 3: the outgoing model payload carries the json_schema response_format.
+        rf = (calls["last"] or {}).get("response_format", {})
+        check("constrained decoding: outgoing payload carries response_format json_schema",
+              rf.get("type") == "json_schema" and "schema" in rf.get("json_schema", {}))
+    finally:
+        libclient._post_json = _d_orig
+
+    # --- Piece 3: json_schema degrades gracefully on a 4xx ---
+    seen = []
+    def _schema_reject(url, payload, headers, timeout):
+        rf = payload.get("response_format")
+        seen.append(rf.get("type") if rf else "plain")
+        if rf and rf.get("type") == "json_schema":
+            raise libclient.ModelCallError(f"HTTP 400 from {url}: unsupported response_format")
+        return {"choices": [{"message": {"content": json.dumps(
+            {"recommendation": "hold", "confidence": 0.2, "reason": "ok"})}}]}
+    _s_orig = libclient._post_json
+    libclient._post_json = _schema_reject
+    try:
+        out = libclient.chat(dcfg, "triage", [{"role": "user", "content": "x"}],
+                             schema={"type": "object"})
+        check("constrained decoding: a 4xx on json_schema degrades to a looser format",
+              seen[0] == "json_schema" and "json_object" in seen and bool(out))
+    finally:
+        libclient._post_json = _s_orig
+
+    # --- Piece 2: deterministic pre-adjudicate of contradictions ---
+    padj = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-padj-")))
+    write(padj / "config.toml", (padj / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub"\nbase_url = "http://stub/v1"\n')
+    pcfg = _LibCfg.load(start=padj)
+    old = "2020-01-01T00:00:00Z"
+    with Repo.open(start=padj) as r:
+        for h, o in (("pw", "clip"), ("pl", "clip"), ("ps", "clip"),
+                     ("pe1", "clip"), ("pe2", "clip")):
+            r.ex("INSERT INTO sources(hash,path,origin) VALUES(?,?,?)", (h, "raw/" + h, o))
+        sw = r.one("SELECT id FROM sources WHERE hash='pw'")["id"]
+        sl = r.one("SELECT id FROM sources WHERE hash='pl'")["id"]
+        ss = r.one("SELECT id FROM sources WHERE hash='ps'")["id"]
+        se1 = r.one("SELECT id FROM sources WHERE hash='pe1'")["id"]
+        se2 = r.one("SELECT id FROM sources WHERE hash='pe2'")["id"]
+        # Dominant contradiction: W is newer, more specific (2 entities), and
+        # corroborated by a second source; L is older, vaguer, uncorroborated.
+        wid = _ins_claim(r, "The new north campus library opened in 2026 with 500 seats",
+                         0.7, "clip", "promoted", sw, now)
+        lid = _ins_claim(r, "Enrollment fell last year", 0.7, "clip", "promoted", sl, old)
+        _ins_claim(r, "The north campus library opened in 2026", 0.7, "clip", "promoted", ss, now)
+        for name in ("North Campus Library", "2026"):
+            r.ex("INSERT INTO entities(name,kind) VALUES(?, 'concept')", (name,))
+            eid = r.one("SELECT id FROM entities WHERE name=?", (name,))["id"]
+            r.ex("INSERT INTO claim_entities(claim_id,entity_id) VALUES(?,?)", (wid, eid))
+        # Even contradiction: same age, same (zero) specificity -> left to the model.
+        e1 = _ins_claim(r, "Widget alpha shipped", 0.7, "clip", "promoted", se1, now)
+        e2 = _ins_claim(r, "Widget alpha delayed", 0.7, "clip", "promoted", se2, now)
+        r.ex("INSERT INTO contradictions(claim_a,claim_b,status) VALUES(?,?,'open')", (wid, lid))
+        r.ex("INSERT INTO contradictions(claim_a,claim_b,status) VALUES(?,?,'open')", (e1, e2))
+        c_dom = r.one("SELECT id FROM contradictions WHERE claim_a=?", (wid,))["id"]
+        c_even = r.one("SELECT id FROM contradictions WHERE claim_a=?", (e1,))["id"]
+        r.conn.commit()
+
+    acalls = {"n": 0}
+    def _padj_stub(url, payload, headers, timeout):
+        acalls["n"] += 1
+        return {"choices": [{"message": {"content": json.dumps(
+            {"proposal": "A human should compare these two.", "confidence": 0.4})}}]}
+    _p_orig = libclient._post_json
+    libclient._post_json = _padj_stub
+    try:
+        with Repo.open(start=padj) as r:
+            prep = libadj.run(r, pcfg)
+        check("pre-adjudicate: the model is called ONLY for the even contradiction (1 of 2)",
+              acalls["n"] == 1)
+        check("pre-adjudicate: run reports 1 deterministic decision",
+              prep.get("deterministic") == 1)
+        with Repo.open(start=padj) as r:
+            dom = r.one("SELECT * FROM contradictions WHERE id=?", (c_dom,))
+            evn = r.one("SELECT * FROM contradictions WHERE id=?", (c_even,))
+        check("pre-adjudicate: dominant pair gets a deterministic supersede proposal",
+              dom["proposal"] and f"#{lid}" in dom["proposal"]
+              and "supersede" in dom["proposal"].lower())
+        check("pre-adjudicate: the even pair's proposal came from the model",
+              evn["proposal"] == "A human should compare these two.")
+        check("pre-adjudicate: NEITHER contradiction is resolved (still open)",
+              dom["status"] == "open" and evn["status"] == "open")
+    finally:
+        libclient._post_json = _p_orig
+
     # ---------------- Librarian adjudicate (advisory; model stubbed) ---------
     print("[librarian-adjudicate] proposals for open contradictions/escalations; "
           "never resolves/closes")

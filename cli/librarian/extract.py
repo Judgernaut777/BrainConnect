@@ -67,6 +67,49 @@ CONTRACT = """Return a JSON object exactly in this shape:
   "tags": ["optional", "labels"]
 }"""
 
+# Grammar-constrained decoding target (see client.chat): mirrors the CONTRACT and
+# what ingest.file_claims_data accepts. Extraction stays fully model-driven — only
+# the OUTPUT SHAPE is constrained, so a small local model emits parseable JSON on
+# the first pass. Kept permissive (optional fields, string-or-object entities) so
+# it works as a grammar on local servers; strict-only servers just degrade to
+# json_object via client.chat's fallback. source_id is overwritten authoritatively.
+_ENTITY = {"anyOf": [
+    {"type": "string"},
+    {"type": "object",
+     "properties": {"name": {"type": "string"}, "kind": {"type": "string"}},
+     "required": ["name"]},
+]}
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "source_id": {"type": "integer"},
+        "summary": {"type": "string"},
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "location": {"type": "string"},
+                    "entities": {"type": "array", "items": _ENTITY},
+                    "relations": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"src": _ENTITY, "rel": {"type": "string"},
+                                       "dst": _ENTITY},
+                        "required": ["src", "rel", "dst"]}},
+                },
+                "required": ["text", "confidence"],
+            },
+        },
+        "low_confidence": {"type": "boolean"},
+        "proposed_questions": {"type": "array", "items": {"type": "string"}},
+        "category": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "claims"],
+}
+
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
 
 
@@ -124,7 +167,7 @@ def extract_source(repo: Repo, cfg: LibrarianConfig, source_id: int) -> dict:
     last_err: Exception | None = None
     for _ in range(attempts):
         try:
-            content = client.chat(cfg, "extract", messages)
+            content = client.chat(cfg, "extract", messages, schema=SCHEMA)
         except client.ModelCallError as e:
             raise ExtractionFailed(str(e))
         try:

@@ -54,6 +54,17 @@ CONTRACT = """Return exactly:
   "confidence": 0.0
 }"""
 
+# Grammar-constrained decoding target (see client.chat): mirrors _parse's shape.
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "proposal": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["proposal", "confidence"],
+    "additionalProperties": False,
+}
+
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
 
 
@@ -104,7 +115,7 @@ def _propose(repo: Repo, cfg: LibrarianConfig, system: str, body: str) -> dict:
     last: Exception | None = None
     for _ in range(attempts):
         try:
-            content = client.chat(cfg, "adjudicate", messages)
+            content = client.chat(cfg, "adjudicate", messages, schema=SCHEMA)
             return _parse(content)
         except (AdjudicationFailed, client.ModelCallError) as e:
             last = e
@@ -164,8 +175,18 @@ def run(repo: Repo, cfg: LibrarianConfig, *, only_unproposed: bool = True) -> di
     skip = " AND (proposal IS NULL OR proposal = '')" if only_unproposed else ""
     contras = repo.q(f"SELECT id FROM contradictions WHERE status='open'{skip} ORDER BY id")
     escals = repo.q(f"SELECT id FROM escalations WHERE status='open'{skip} ORDER BY id")
-    done, failed = [], []
+    done, failed, decided = [], [], 0
     for r in contras:
+        # Hybrid pre-filter: a strictly-dominant side is resolved in pure code
+        # (newer + more specific + corroborated) with no model call.
+        row = repo.one("SELECT * FROM contradictions WHERE id = ?", (r["id"],))
+        pre = review.preadjudicate_contradiction(repo, row)
+        if pre["decided"]:
+            review.contradiction_propose(repo, r["id"], pre["proposal"])
+            done.append({"kind": "contradiction", "id": r["id"], "model": "deterministic",
+                         "proposal": pre["proposal"], "confidence": pre["confidence"]})
+            decided += 1
+            continue
         try:
             rec = adjudicate_contradiction(repo, cfg, r["id"])
             done.append({"kind": "contradiction", "id": r["id"], **rec})
@@ -179,5 +200,5 @@ def run(repo: Repo, cfg: LibrarianConfig, *, only_unproposed: bool = True) -> di
             failed.append({"kind": "escalation", "id": r["id"], "error": str(e)})
     if done:
         repo.finalize("librarian-adjudicate",
-                      f"{len(done)} proposed, {len(failed)} failed")
-    return {"proposed": done, "failed": failed}
+                      f"{len(done)} proposed ({decided} deterministic), {len(failed)} failed")
+    return {"proposed": done, "failed": failed, "deterministic": decided}

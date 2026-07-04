@@ -114,6 +114,29 @@ model = "qwen3:14b"
 # synthesize = "ornith-1.0-35b"             # prose + skill drafts
 # (Or point base_url at a router and set model = "auto" to let it classify.)
 
+# --- Example: RUN ENTIRELY ON CPU — no GPU, no API, no key, no monthly bill.
+# WikiBrain is designed to be whole without calling out to a paid/remote API.
+# The `wiki` CLI is already 100% deterministic; the librarian is the only
+# model-bearing half, and two things keep a small local CPU model sufficient:
+#   1. a pure-code pre-filter resolves the clear triage/contradiction cases, so
+#      the model is only asked about the genuinely ambiguous ones (see below);
+#   2. json_schema = true forces schema-valid JSON on the first pass, so a small
+#      model is reliable without a retry loop.
+# Point base_url at a local llama.cpp/Ollama server on the SAME box (no LAN, no
+# firewall to think about). July-2026 CPU picks: Qwen3.5 4B (or 9B) for the
+# high-volume extract/triage; on a high-RAM box a small-active MoE (e.g. a
+# 35B-A3B — 35B weights but only ~3B active per token) gives near-large-model
+# adjudication at CPU-friendly speed. See README "Run entirely on CPU".
+# base_url    = "http://localhost:8080/v1"   # llama.cpp `-m qwen3.5-4b.gguf --host 0.0.0.0`
+# api_key_env = ""                            # local server, no key
+# model       = "qwen3.5:4b"
+# [librarian.models]
+# extract    = "qwen3.5:4b"                  # high volume — small + grammar-constrained
+# triage     = "qwen3.5:4b"                  # most cases resolved in pure code first
+# adjudicate = "qwen3.5:35b-a3b"             # MoE: large quality, ~3B active (high-RAM box)
+# synthesize = "qwen3.5:35b-a3b"             # prose + skill drafts
+# json_schema = true                          # grammar-constrained JSON (default on)
+
 max_source_chars = 24000         # truncate raw source text sent to the model
 timeout = 180                    # seconds per model call
 temperature = 0.2
@@ -122,3 +145,11 @@ network_retries = 2              # transient (connection/5xx) retries w/ backoff
 # Output token cap per call (sent as max_tokens; 0 omits it). Reasoning models
 # spend tokens thinking before the JSON, so keep this >= ~2048 for them.
 max_tokens = 4096
+
+# Grammar-constrained decoding: send each pass's JSON schema as `response_format:
+# json_schema` so the server can only emit schema-valid JSON on the first pass.
+# This is what makes a SMALL local CPU model reliable (the parse/retry loop
+# mostly disappears). Auto-degrades: a server that rejects the param falls back
+# to json_object, then plain — safe to leave on. Honored by llama.cpp, vLLM,
+# SGLang (xgrammar), OpenAI.
+json_schema = true

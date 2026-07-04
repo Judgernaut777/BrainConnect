@@ -144,6 +144,55 @@ synthesize = "deepseek/deepseek-chat"   # page prose + skill drafts
 the key env var is set, and a live **reachability** check — run it first if a
 pass fails.
 
+### Run entirely on CPU — no GPU, no API, no monthly bill
+WikiBrain is built to be **whole without calling out to a paid or remote API**.
+Many people can't run GPU models on their agent box, APIs cost money, and a leaner
+local path is simply more graceful. The `wiki` CLI is already 100% deterministic
+(ingest, gate, render, search, contradiction *detection*). The librarian is the
+only model-bearing half, and two design choices keep a **small local CPU model**
+enough for it:
+
+1. **A pure-code pre-filter** resolves the *clear* cases before the model is ever
+   asked. Triage rejects degenerate text and near-duplicates of promoted claims,
+   and promotes corroborated near-misses, on its own; contradiction adjudication
+   resolves the "newer **and** more specific **and** corroborated wins" cases on
+   its own. The model is spent only on the genuinely *ambiguous residue* — so a
+   4B model handles what would otherwise need a much larger one. Deterministic
+   recommendations are recorded with `model = "deterministic"`, so you can always
+   see which came from a rule and which from the model in `wiki triage` /
+   `wiki contradiction list`.
+2. **Grammar-constrained decoding** (`json_schema = true`, on by default) forces
+   schema-valid JSON on the first pass, so a small model is reliable without a
+   parse-and-retry loop. Honored by llama.cpp, vLLM, and SGLang (xgrammar); it
+   auto-degrades to `json_object` then plain on servers that don't support it, so
+   it's safe to leave on everywhere.
+
+**July-2026 CPU picks.** For the high-volume **extract** and **triage** work, a
+small dense model is plenty: **Qwen3.5 4B** (fast on any modern CPU, ~3–4 GB RAM
+at Q4) or **Qwen3.5 9B** / **Nemotron Nano 4B** if you have headroom. For the
+low-volume, harder **adjudicate** and **synthesize** passes, the sweet spot on a
+CPU box is a **small-active MoE**: a **35B-A3B** (35B total weights, only ~3B
+*active* per token) gives close to large-model judgment while running at the speed
+of a ~3B model — you trade RAM (the whole model must fit, ~20 GB at Q4) for speed.
+On a 16 GB box, stay dense (4B/9B for everything); on a 32 GB+ box, route the two
+hard passes to the MoE. Everything runs against a local llama.cpp or Ollama server
+on the *same* machine — no LAN, no firewall, no key:
+```toml
+[librarian]
+base_url    = "http://localhost:8080/v1"   # llama.cpp: `-m qwen3.5-4b.gguf`
+api_key_env = ""                            # local — no key
+model       = "qwen3.5:4b"
+json_schema = true                          # grammar-constrained JSON (default on)
+[librarian.models]
+extract    = "qwen3.5:4b"                   # high volume — small + grammar-constrained
+triage     = "qwen3.5:4b"                   # most cases resolved in pure code first
+adjudicate = "qwen3.5:35b-a3b"              # MoE: large quality, ~3B active (32 GB+ box)
+synthesize = "qwen3.5:35b-a3b"              # prose + skill drafts
+```
+The model is still *required* to finish a pass — this is a hybrid, not a full
+offline fallback — but the deterministic pre-filter and constrained decoding are
+what let that model be small, local, and free.
+
 **A separate inference box (agents here, models there).** The librarian treats
 inference as a plain remote API, so you can run it on one machine and your models
 on another. Point `base_url` at the other box's OpenAI-compatible gateway
