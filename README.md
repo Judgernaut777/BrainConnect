@@ -170,6 +170,54 @@ the JSON, and strips the `<think>…</think>` preamble automatically. If your ga
 exposes a `model = "auto"` router, set that as the top-level `model` and drop the
 per-task table to let it classify.
 
+## Serving models from another box
+A clean split is to run the agents (this repo + the librarian) on one machine and
+your models on a dedicated **inference box**, with a gateway in between. The
+librarian treats that gateway as a plain remote API, so the setup is just:
+networking + one token. [LiteLLM](https://docs.litellm.ai/) is the recommended
+gateway because it fronts **local *and* cloud** models uniformly.
+
+**1. Run LiteLLM on the inference box, exposed on the LAN with a master key.**
+Local GGUF models point at your llama-swap/llama.cpp servers; cloud models carry
+the *vendor's* key (from the box's environment). Expose each under a friendly name:
+```yaml
+# litellm config on the inference box (sketch)
+model_list:
+  - model_name: qwen2.5-coder-14b            # local
+    litellm_params: { model: openai/qwen2.5-coder-14b, api_base: http://127.0.0.1:8080/v1 }
+  - model_name: ornith-1.0-35b               # local
+    litellm_params: { model: openai/ornith-1.0-35b, api_base: http://127.0.0.1:8080/v1 }
+  - model_name: sonnet                        # cloud — key stays on THIS box
+    litellm_params: { model: anthropic/claude-sonnet-4-5, api_key: os.environ/ANTHROPIC_API_KEY }
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY   # the token the agent box will use
+```
+Bind it on the LAN behind a firewall (`--host 0.0.0.0 --port 4000`), or put a
+TLS reverse proxy (Caddy/nginx) in front for `https://`, or reach it over a VPN /
+SSH tunnel if you'd rather not open a port.
+
+**2. On the agent box, point the librarian at the gateway** and hand it *only the
+gateway's* token — never a vendor key:
+```toml
+[librarian]
+base_url    = "http://inferencebox.lan:4000/v1"   # or https:// via a proxy
+api_key_env = "LITELLM_MASTER_KEY"                # export the value in your shell
+model       = "qwen2.5-coder-14b"
+[librarian.models]
+extract    = "qwen2.5-coder-14b"    # local — cheap, high volume
+triage     = "ornith-1.0-9b"        # local
+adjudicate = "sonnet"               # cloud — hardest judgement
+synthesize = "sonnet"               # cloud
+```
+
+**Why this shape.** Mixing in a cloud model doesn't weaken the agent box's key
+posture — the vendor key lives on the inference box, and WikiBrain only holds a
+token *you* issue and can rotate/revoke. Switching a task between local and cloud
+is a one-line edit to `[librarian.models]` (names LiteLLM already exposes); no code
+change. You also get LiteLLM's fallback chains (local down → spill to cloud) and
+central budgets/rate-limits/logging for free. `wiki-librarian status` verifies the
+gateway is reachable before a pass; `network_retries` covers the hop to it.
+
 ## Design boundaries
 - The `wiki` CLI contains **zero model calls** (a billing + determinism
   boundary). All judgment happens inside your agent/model session (the
