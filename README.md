@@ -39,6 +39,111 @@ Provenance is rigorous: every source artifact is hash-verified, and nothing
 becomes truth except through a human-gated promotion. See **BUILD_SPEC.md** for the
 full design and **SCHEMA.md** for conventions.
 
+## Quickstart (~5 minutes)
+The fastest path: the `wiki` CLI captures sources; the **librarian**
+(`wiki-librarian`, a separate process) does the model judgment against a local,
+key-free model; you open the result in Obsidian. The librarian only ever
+**drafts and proposes** — you keep the promote/resolve/approve gates.
+
+**1. Install the CLI** (installs both `wiki` and `wiki-librarian`):
+```powershell
+# PowerShell (Windows) — from the repo root
+Copy-Item config.example.toml config.toml
+py -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .\cli
+```
+```bash
+# POSIX (Linux/macOS) — from the repo root
+cp config.example.toml config.toml
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ./cli
+```
+
+**2. Point the librarian at a local model.** Edit `config.toml` → `[librarian]`
+(see [Choosing a model](#choosing-a-model) to pick one). For a local Ollama:
+```toml
+[librarian]
+base_url = "http://localhost:11434/v1"   # Ollama; LM Studio is :1234
+model    = "qwen3:14b"                     # a model you've pulled
+# api_key_env = "OPENROUTER_API_KEY"       # only for hosted endpoints (NAME of an env var)
+```
+
+**3. Create the DB and scaffold dirs:**
+```bash
+wiki init          # or .venv/bin/wiki init  ·  .\wiki init (Win)  ·  ./wiki.sh init
+```
+
+**4. Capture something** (every source enters `pending`, behind the human gate):
+```bash
+wiki capture --origin me "TIL: HTTP caches key on the request, not the response"
+wiki add https://example.com/article --origin clip      # a URL or bookmark
+```
+
+**5. Run the one-command judgment cycle:**
+```bash
+wiki-librarian status      # confirm the endpoint is reachable + see the backlog
+wiki-librarian maintain    # catch-up → triage → adjudicate → synthesize, then render/digest/lint/health
+```
+`maintain` extracts every pending source, auto-gates the easy tier, and drafts
+recommendations for the rest — then tells you exactly **what needs you**:
+```
+What needs YOU (human gates — the librarian only drafts/proposes):
+  * review + promote/reject held claims:            wiki triage
+  * resolve contradictions / close escalations:     wiki contradiction list, wiki escalation list
+  * approve skill drafts:                            wiki skill list --status draft
+```
+
+**6. Act on the gates and browse:**
+```bash
+wiki triage list --recommendation promote   # the claims it suggests promoting
+wiki promote 14 19 ; wiki reject 22          # you decide — the gate is yours
+wiki render                                  # rebuild pages from the DB
+```
+Open the `wiki/` folder as an **Obsidian vault** to browse (graph view works via
+`[[wikilinks]]`). That's the loop: capture → `wiki-librarian maintain` → act on
+the gates → browse. Everything below is depth on each piece.
+
+> **The full librarian surface:** `extract` (one source), `catch-up` (drain the
+> backlog), `triage`, `adjudicate`, `synthesize`, `maintain` (all of them at
+> once), `watch` (a drop-folder loop), `status`. Run `wiki-librarian <cmd>
+> --help` for any of them.
+
+## Choosing a model
+The librarian talks to **any OpenAI-compatible `/v1` endpoint**. Two postures:
+
+**Local & key-free (recommended to start).** No API key touches the repo.
+- **Ollama** — install from [ollama.com](https://ollama.com), then
+  `ollama pull qwen3:14b`. Endpoint: `http://localhost:11434/v1`.
+- **LM Studio** — install from [lmstudio.ai](https://lmstudio.ai), download a
+  model in the UI, start its local server. Endpoint: `http://localhost:1234/v1`.
+
+Set `base_url`/`model` in `[librarian]` and leave `api_key_env = ""`.
+
+**Hosted OpenAI-compatible (OpenRouter, DeepSeek, OpenAI, Anthropic's compat
+endpoint).** Put the key in an **environment variable** and name it — never paste
+the key into `config.toml` (`wiki lint` scans for leaked keys):
+```toml
+[librarian]
+base_url    = "https://openrouter.ai/api/v1"
+model       = "deepseek/deepseek-chat"
+api_key_env = "OPENROUTER_API_KEY"        # the NAME; export the value in your shell
+```
+
+**Per-task routing.** Extraction is high-volume and easy; adjudication and
+synthesis are low-volume and hard. Route a cheap/local model to the bulk work and
+reserve a stronger one for judgment under `[librarian.models]` (any task without
+an override falls back to the top-level `model`):
+```toml
+[librarian.models]
+extract    = "qwen3:14b"          # high volume — keep it cheap/local
+triage     = "qwen3:14b"          # per-claim promote/reject/hold recommendation
+adjudicate = "deepseek/deepseek-chat"   # contradictions/escalations — hardest, lowest volume
+synthesize = "deepseek/deepseek-chat"   # page prose + skill drafts
+```
+`wiki-librarian status` prints the resolved endpoint, per-task models, whether
+the key env var is set, and a live **reachability** check — run it first if a
+pass fails.
+
 ## Design boundaries
 - The `wiki` CLI contains **zero model calls** (a billing + determinism
   boundary). All judgment happens inside your agent/model session (the
@@ -167,10 +272,11 @@ live MCP stdio server (needs the `[mcp]` extra) are exercised separately.
 The judgment half doesn't need an interactive Claude Code session or a nightly
 schedule. The **librarian** (`wiki-librarian`, installed alongside `wiki`) is a
 *separate* process — so `wiki` keeps its zero-model-call guarantee — that runs
-the extraction pass against **any OpenAI-compatible endpoint**: local and
-key-free (Ollama, LM Studio) or hosted (OpenRouter, DeepSeek, OpenAI, Anthropic's
-compat endpoint). It never promotes; everything it files is pending, behind the
-same human gate.
+the judgment passes (extract, triage, adjudicate, synthesize — or all of them via
+`maintain`) against **any OpenAI-compatible endpoint**: local and key-free
+(Ollama, LM Studio) or hosted (OpenRouter, DeepSeek, OpenAI, Anthropic's compat
+endpoint). It never promotes, resolves, closes, or approves; everything it files
+is pending or draft, behind the same human gates.
 
 It's triggered by **events, not a clock**. Turn it on in `config.toml`:
 ```toml
@@ -206,6 +312,29 @@ wiki triage                  # summary: promote/reject/hold/untriaged counts (pu
 wiki triage list --recommendation promote   # the claims it suggests promoting
 wiki promote 14 19 ; wiki reject 22          # you decide — the gate is still yours
 ```
+
+**Adjudicate + synthesize (also advisory).** Two more passes round out the
+judgment half, each drafting only:
+```powershell
+wiki-librarian adjudicate    # draft proposals for open contradictions + escalations
+wiki-librarian synthesize    # draft page prose + skill drafts for changed pages
+```
+`adjudicate` writes a **proposal** onto each open contradiction/escalation but
+never resolves or closes them; `synthesize` leaves page prose and any new skill
+at `status='draft'`. The human readers/gates on the `wiki` side:
+```powershell
+wiki contradiction list ; wiki escalation list   # read the open items + proposals
+wiki contradiction resolve <id> ; wiki escalation close <id>   # you resolve/close
+wiki skill list --status draft ; wiki skill approve <name>     # you approve
+```
+
+**One command for all of it.** `wiki-librarian maintain` chains catch-up →
+triage → adjudicate → synthesize, then the pure-code tail (render, digest, lint,
+health) — with a **preflight** that fails fast (naming `base_url`) if no model is
+reachable, and one bad stage never aborting the rest. It prints a "what needs
+YOU" gate checklist at the end. Skip stages with `--no-triage`/`--no-adjudicate`/
+`--no-synthesize`; add `--commit` to git-commit at the end (off by default — git
+stays your call). This is the primary path in the [Quickstart](#quickstart-5-minutes).
 
 > The librarian is the model-bearing half by design. The original key-free,
 > subscription-only posture (below) is still fully supported — point the

@@ -88,14 +88,15 @@ base_url = "http://localhost:11434/v1"
 api_key_env = ""                 # e.g. "OPENROUTER_API_KEY"
 
 # Default model for every task. Per-task overrides go under [librarian.models]:
-# cheap/local for the high-volume extraction, a stronger model for adjudication
-# and synthesis once those passes land.
+# cheap/local for the high-volume extraction + triage, a stronger model for
+# adjudication and synthesis. Any task without an override uses this default.
 model = "qwen3:14b"
 
 # [librarian.models]
 # extract    = "qwen3:14b"                  # high volume — keep it cheap/local
-# adjudicate = "claude-sonnet-5"            # contradictions — lowest volume, hardest
-# synthesize = "claude-sonnet-5"            # page prose
+# triage     = "qwen3:14b"                  # per-claim promote/reject/hold recommendation
+# adjudicate = "claude-sonnet-5"            # contradictions/escalations — lowest volume, hardest
+# synthesize = "claude-sonnet-5"            # page prose + skill drafts
 
 max_source_chars = 24000         # truncate raw source text sent to the model
 timeout = 180                    # seconds per model call
