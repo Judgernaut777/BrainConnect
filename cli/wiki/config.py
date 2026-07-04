@@ -65,29 +65,34 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
-def find_repo_root(start: Path | None = None) -> Path:
+def find_repo_root(start: Path | None = None) -> tuple[Path, bool]:
+    """Return (root, found). `found` is True iff an ancestor of `start` (or CWD)
+    contains config.toml. False means no wiki-brain repo was found and we fell
+    back to that directory anyway — callers that require an existing brain
+    should treat `found=False` as an error instead of silently operating on
+    whatever directory the shell happened to be in."""
     cur = (start or Path.cwd()).resolve()
     for p in [cur, *cur.parents]:
         if (p / "config.toml").exists():
-            return p
-    # Fallback: if a marker dir layout exists, use cwd; else cwd.
-    return cur
+            return p, True
+    return cur, False
 
 
 @dataclass
 class Config:
     root: Path
     data: dict = field(default_factory=dict)
+    found: bool = True
 
     @classmethod
     def load(cls, start: Path | None = None) -> "Config":
-        root = find_repo_root(start)
+        root, found = find_repo_root(start)
         cfg_path = root / "config.toml"
         user = {}
         if cfg_path.exists():
             with open(cfg_path, "rb") as fh:
                 user = tomllib.load(fh)
-        return cls(root=root, data=_deep_merge(DEFAULTS, user))
+        return cls(root=root, data=_deep_merge(DEFAULTS, user), found=found)
 
     # --- typed accessors ---
     @property

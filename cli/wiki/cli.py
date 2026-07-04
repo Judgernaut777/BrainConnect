@@ -73,7 +73,10 @@ def cmd_init(args):
     db_path = cfg.db_path
     if db_path.exists():
         print(f"DB already exists at {db_path} (leaving as-is)")
-        repo = Repo.open()
+        # must_exist=False: config.toml may not exist yet in a fresh directory
+        # (that's exactly the case `wiki init` handles) — the "not inside a
+        # wiki-brain repo" guard in Repo.open() must not fire here.
+        repo = Repo.open(must_exist=False)
     else:
         repo = init_db()
         print(f"created DB at {db_path}")

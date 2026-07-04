@@ -11,8 +11,10 @@ budget ledger). Exits non-zero on first failure.
 """
 from __future__ import annotations
 
+import argparse
 import inspect
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -1952,7 +1954,7 @@ def main():
     _m_orig = libclient._post_json
     _reach_orig = libclient.reachable
     libclient._post_json = _m_stub
-    libclient.reachable = lambda cfg, **k: True
+    libclient.reachable = lambda cfg, **k: (True, "reachable")
     try:
         with Repo.open(start=mt) as r:
             mrep = libmaintain.run(r, mcfg)
@@ -2009,7 +2011,7 @@ def main():
         mt_calls["n"] += 1
         return {"choices": [{"message": {"content": "{}"}}]}
     libclient._post_json = _m_count
-    libclient.reachable = lambda cfg, **k: False
+    libclient.reachable = lambda cfg, **k: (False, "connection refused (stub)")
     try:
         pf_err = None
         try:
@@ -2025,6 +2027,82 @@ def main():
     finally:
         libclient._post_json = _m_orig
         libclient.reachable = _reach_orig
+
+    # ---------------- BUILD: first-run / failure UX --------------------------
+    print("[build-ux] not-a-repo guard, `wiki init` in a fresh dir, status reachability")
+    from librarian import cli as libcli
+    from wiki.cli import cmd_init as _cmd_init
+
+    # (1) A command that requires an existing brain, run outside any wiki-brain
+    # repo, gives a clear actionable message — not a raw traceback, and not a
+    # silent, confusing operation against some unrelated directory.
+    nobrain = Path(tempfile.mkdtemp(prefix="wikibrain-nobrain-"))
+    notrepo_msg = None
+    try:
+        Repo.open(start=nobrain)
+    except SystemExit as e:
+        notrepo_msg = str(e)
+    check("repo-required command outside a brain raises (not silently misbehaves)",
+          notrepo_msg is not None)
+    check("the not-a-repo message is actionable (names `wiki init` + cd)",
+          notrepo_msg is not None and "wiki init" in notrepo_msg
+          and "not inside a wiki-brain repo" in notrepo_msg)
+
+    # (2) `wiki init` itself must still work in a totally fresh directory (no
+    # config.toml yet — that's the whole point of the command). Redirect the
+    # default db_path's home-relative expansion at a throwaway HOME so this
+    # test never touches a real ~/.wiki-brain/wiki.db.
+    freshdir = Path(tempfile.mkdtemp(prefix="wikibrain-freshinit-"))
+    fake_home = Path(tempfile.mkdtemp(prefix="wikibrain-freshinit-home-"))
+    prev_cwd = os.getcwd()
+    prev_home = os.environ.get("HOME")
+    os.chdir(freshdir)
+    os.environ["HOME"] = str(fake_home)
+    try:
+        init_ok = True
+        try:
+            _cmd_init(argparse.Namespace())
+        except SystemExit:
+            init_ok = False
+        check("wiki init still works in a fresh directory with no config.toml",
+              init_ok)
+        check("wiki init created its DB under the fake HOME (never the real one)",
+              (fake_home / ".wiki-brain" / "wiki.db").exists())
+    finally:
+        os.chdir(prev_cwd)
+        if prev_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = prev_home
+
+    # (3) `wiki-librarian status` surfaces reachability (+ why not) from
+    # client.reachable(), stubbed offline — never a live network call.
+    st_root = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-status-")))
+    write(st_root / "config.toml",
+          (st_root / "config.toml").read_text(encoding="utf-8")
+          + '[librarian]\nmodel = "stub/model"\nbase_url = "http://stub/v1"\n'
+          'api_key_env = "WIKIBRAIN_TEST_KEY"\n')
+    from librarian.config import LibrarianConfig as _LC
+    st_cfg = _LC.load(start=st_root)
+    _reach_orig2 = libclient.reachable
+    os.environ.pop("WIKIBRAIN_TEST_KEY", None)
+    try:
+        libclient.reachable = lambda cfg, **k: (True, "reachable")
+        with Repo.open(start=st_root) as r:
+            up = libcli._status_report(st_cfg, r)
+        check("status reports reachable=True from a stubbed reachable()",
+              up["reachable"] is True and up["reachable_detail"] == "reachable")
+        check("status reports api_key_set=False when the named env var is unset",
+              up["api_key_env"] == "WIKIBRAIN_TEST_KEY" and up["api_key_set"] is False)
+
+        libclient.reachable = lambda cfg, **k: (False, "[Errno 111] Connection refused")
+        with Repo.open(start=st_root) as r:
+            down = libcli._status_report(st_cfg, r)
+        check("status reports reachable=False + a WHY detail from a stubbed reachable()",
+              down["reachable"] is False
+              and "Connection refused" in down["reachable_detail"])
+    finally:
+        libclient.reachable = _reach_orig2
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

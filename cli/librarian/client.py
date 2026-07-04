@@ -38,11 +38,13 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int) -> dict:
         raise ModelCallError(f"model endpoint unreachable ({url}): {e}") from e
 
 
-def reachable(cfg: LibrarianConfig, *, timeout: int = 5) -> bool:
-    """Cheap liveness probe against the configured base_url. Returns True if the
-    host answers at all — any HTTP response (even 404) means something is
-    listening — and False on a connection/timeout error. Used by the maintain
-    preflight so a down endpoint fails fast instead of mid-run. No model call."""
+def reachable(cfg: LibrarianConfig, *, timeout: int = 5) -> tuple[bool, str]:
+    """Cheap liveness probe against the configured base_url. Returns (True,
+    "reachable") if the host answers at all — any HTTP response (even 404)
+    means something is listening — and (False, <reason>) on a connection/
+    timeout error, so callers (maintain's preflight, `wiki-librarian status`)
+    can show WHY a down endpoint failed instead of just that it did. No model
+    call."""
     url = str(cfg.get("base_url")).rstrip("/")
     headers = {"User-Agent": UA}
     key = cfg.api_key()
@@ -52,11 +54,11 @@ def reachable(cfg: LibrarianConfig, *, timeout: int = 5) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read(0)
-        return True
+        return True, "reachable"
     except urllib.error.HTTPError:
-        return True  # the host answered; we only care that it is up
-    except Exception:
-        return False
+        return True, "reachable"  # the host answered; we only care that it is up
+    except Exception as e:
+        return False, str(e)
 
 
 def chat(cfg: LibrarianConfig, task: str, messages: list[dict],

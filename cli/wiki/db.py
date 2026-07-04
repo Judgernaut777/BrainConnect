@@ -25,6 +25,11 @@ class Repo:
     @classmethod
     def open(cls, start: Path | None = None, *, must_exist: bool = True) -> "Repo":
         cfg = Config.load(start)
+        if must_exist and not cfg.found:
+            raise SystemExit(
+                "error: not inside a wiki-brain repo — cd into one, or run "
+                "`wiki init` to create one here"
+            )
         db_path = cfg.db_path
         if must_exist and not db_path.exists():
             raise SystemExit(

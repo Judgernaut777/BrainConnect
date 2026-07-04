@@ -51,10 +51,12 @@ def _preflight(cfg: LibrarianConfig) -> dict:
             "under [librarian.models]) in config.toml before running maintain")
     cfg.api_key()  # raises LibrarianConfigError with a clear message if env unset
     base = cfg.get("base_url")
-    if not client.reachable(cfg):
+    ok, detail = client.reachable(cfg)
+    if not ok:
         raise PreflightError(
-            f"model endpoint unreachable at base_url {base!r} — start your local "
-            "server (Ollama/LM Studio) or fix [librarian] base_url in config.toml")
+            f"model endpoint unreachable at base_url {base!r} ({detail}) — start "
+            "your local server (Ollama/LM Studio) or fix [librarian] base_url "
+            "in config.toml")
     return {"base_url": base, "model": cfg.get("model") or None}
 
 

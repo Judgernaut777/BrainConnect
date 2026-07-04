@@ -7,17 +7,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from wiki.db import Repo
 
 from . import adjudicate as adjudicatemod
+from . import client
 from . import extract as extractmod
 from . import maintain as maintainmod
 from . import synthesize as synthesizemod
 from . import triage as triagemod
 from . import watch as watchmod
-from .config import LibrarianConfig
+from .config import LibrarianConfig, LibrarianConfigError
 
 
 def _emit(obj, as_json: bool) -> bool:
@@ -27,13 +29,25 @@ def _emit(obj, as_json: bool) -> bool:
     return False
 
 
+def _model_hint(msg: str, base_url: str) -> str:
+    """A concise, actionable suffix appended when an error looks like the model
+    endpoint could not be reached (vs. a content/format problem the model itself
+    produced) — so a down Ollama/LM Studio reads as "go check X", not a bare
+    stack-trace-flavored string."""
+    if "unreachable" in msg or "HTTP " in msg:
+        return (f"\n      hint: is the endpoint at {base_url} running? check "
+                f"[librarian] base_url in config.toml / that Ollama (or your "
+                f"LM Studio/vLLM server) is up")
+    return ""
+
+
 def cmd_extract(args):
     cfg = LibrarianConfig.load()
     with Repo.open() as repo:
         try:
             rep = extractmod.run_one(repo, cfg, args.source)
         except extractmod.ExtractionFailed as e:
-            sys.exit(f"error: {e}")
+            sys.exit(f"error: {e}{_model_hint(str(e), cfg.get('base_url'))}")
         if _emit(rep, args.json):
             return
         print(f"extracted source #{args.source}: {rep['claims']} claim(s), "
@@ -55,7 +69,8 @@ def cmd_catch_up(args):
         for d in rep["processed"]:
             print(f"  + source #{d['source_id']}: {d['claims']} claim(s)")
         for f in rep["failed"]:
-            print(f"  ! source #{f['source_id']}: {f['error']}")
+            print(f"  ! source #{f['source_id']}: {f['error']}"
+                  f"{_model_hint(f['error'], cfg.get('base_url'))}")
         if rep["processed"]:
             print(f"gate promoted {rep['gate_promoted']}, held {rep['gate_held']}; "
                   f"{rep['pages_rendered']} page(s) rendered")
@@ -77,7 +92,8 @@ def cmd_triage(args):
             print(f"  {d['recommendation']:<7} claim #{d['claim_id']} "
                   f"(conf {d['confidence']:.2f}): {d['reason']}")
         for f in rep["failed"]:
-            print(f"  ! claim #{f['claim_id']}: {f['error']}")
+            print(f"  ! claim #{f['claim_id']}: {f['error']}"
+                  f"{_model_hint(f['error'], cfg.get('base_url'))}")
         print("\nRecommendations are advisory — act with `wiki promote/reject` "
               "(see `wiki triage`).")
 
@@ -98,7 +114,8 @@ def cmd_adjudicate(args):
             print(f"  {d['kind']:<13} #{d['id']} (conf {d['confidence']:.2f}): "
                   f"{d['proposal']}")
         for f in rep["failed"]:
-            print(f"  ! {f['kind']} #{f['id']}: {f['error']}")
+            print(f"  ! {f['kind']} #{f['id']}: {f['error']}"
+                  f"{_model_hint(f['error'], cfg.get('base_url'))}")
         print("\nProposals are advisory — resolve/supersede/close stay human gates "
               "(`wiki contradiction resolve`, `wiki escalation close`).")
 
@@ -121,13 +138,15 @@ def cmd_synthesize(args):
         for d in rep["pages"]:
             print(f"  page {d['page']} ({d['chars']} chars)")
         for f in rep["pages_failed"]:
-            print(f"  ! page {f['page']}: {f['error']}")
+            print(f"  ! page {f['page']}: {f['error']}"
+                  f"{_model_hint(f['error'], cfg.get('base_url'))}")
         for d in rep["skills"]:
             print(f"  skill draft {d['skill']} (from {d['candidate']})")
             for w in d.get("warnings", []):
                 print(f"      note: {w}")
         for f in rep["skills_failed"]:
-            print(f"  ! skill candidate {f['candidate']}: {f['error']}")
+            print(f"  ! skill candidate {f['candidate']}: {f['error']}"
+                  f"{_model_hint(f['error'], cfg.get('base_url'))}")
         print(f"{rep['pages_rendered']} page(s) rendered; "
               f"{len(rep['needs_synthesis_review'])} still need review.")
         print("\nSkill drafts stay status='draft' — APPROVAL is a human gate "
@@ -147,6 +166,7 @@ def cmd_maintain(args):
         try:
             rep = maintainmod.run(repo, cfg, stages=stages, commit=args.commit)
         except maintainmod.PreflightError as e:
+            # already actionable (names the base_url + what to do) — no hint needed
             sys.exit(f"error: {e}")
         if _emit(rep, args.json):
             return
@@ -165,7 +185,8 @@ def cmd_maintain(args):
         for name in rep["stages_skipped"]:
             print(f"  (skipped {name})")
         for err in rep["errors"]:
-            print(f"  ! stage {err['stage']} failed: {err['error']}")
+            print(f"  ! stage {err['stage']} failed: {err['error']}"
+                  f"{_model_hint(err['error'], cfg.get('base_url'))}")
         if rep["committed"]:
             print("  committed:   yes (git commit created)")
         print("\nWhat needs YOU (human gates — the librarian only drafts/proposes):")
@@ -186,27 +207,50 @@ def cmd_watch(args):
         print("watch stopped")
 
 
-def cmd_status(args):
-    cfg = LibrarianConfig.load()
-    with Repo.open() as repo:
-        pending = repo.one("SELECT COUNT(*) n FROM sources WHERE status='new'")["n"]
-    out = {
+def _status_report(cfg: LibrarianConfig, repo) -> dict:
+    """Build the `status` payload — factored out from cmd_status so tests can
+    call it directly with a stubbed `client.reachable()`, without going through
+    argparse or CWD-based config/repo resolution."""
+    pending = repo.one("SELECT COUNT(*) n FROM sources WHERE status='new'")["n"]
+    key_env = cfg.get("api_key_env") or None
+    key_set = bool(key_env and os.environ.get(key_env))
+    try:
+        reach_ok, reach_detail = client.reachable(cfg)
+    except LibrarianConfigError as e:
+        # api_key_env is set but the env var isn't — status should report that,
+        # not crash the whole command.
+        reach_ok, reach_detail = False, str(e)
+    return {
         "auto_extract": cfg.enabled,
         "base_url": cfg.get("base_url"),
         "model": cfg.get("model") or None,
         "models": cfg.get("models"),
-        "api_key_env": cfg.get("api_key_env") or None,
+        "api_key_env": key_env,
+        "api_key_set": key_set,
+        "reachable": reach_ok,
+        "reachable_detail": reach_detail,
         "pending_sources": pending,
     }
+
+
+def cmd_status(args):
+    cfg = LibrarianConfig.load()
+    with Repo.open() as repo:
+        out = _status_report(cfg, repo)
     if _emit(out, args.json):
         return
-    print(f"auto_extract: {'on' if cfg.enabled else 'off'}")
-    print(f"endpoint:     {out['base_url']}")
+    print(f"auto_extract: {'on' if out['auto_extract'] else 'off'}")
+    reach_str = "reachable" if out["reachable"] else f"UNREACHABLE: {out['reachable_detail']}"
+    print(f"endpoint:     {out['base_url']} ({reach_str})")
     print(f"model:        {out['model'] or '(not configured)'}")
     for task, m in (out["models"] or {}).items():
         print(f"  {task}: {m}")
-    print(f"key env:      {out['api_key_env'] or '(none — local endpoint)'}")
-    print(f"pending:      {pending} source(s) awaiting extraction")
+    if out["api_key_env"]:
+        print(f"key env:      {out['api_key_env']} "
+              f"({'set' if out['api_key_set'] else 'NOT SET'})")
+    else:
+        print("key env:      (none — local endpoint)")
+    print(f"pending:      {out['pending_sources']} source(s) awaiting extraction")
 
 
 def build_parser() -> argparse.ArgumentParser:
