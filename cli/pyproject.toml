@@ -2,6 +2,7 @@
 name = "wiki-brain-cli"
 version = "0.2.0"
 description = "Pure-code CLI for the wiki-brain LLM memory system (no model calls)"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "trafilatura>=1.6",

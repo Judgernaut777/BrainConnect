@@ -1,7 +1,7 @@
 # wiki-brain
 
 ![CI](https://github.com/Judgernaut777/WikiBrain/actions/workflows/ci.yml/badge.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Model calls in CLI: zero](https://img.shields.io/badge/CLI%20model%20calls-zero-success.svg)
 
