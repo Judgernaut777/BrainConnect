@@ -5,6 +5,8 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Model calls in CLI: zero](https://img.shields.io/badge/CLI%20model%20calls-zero-success.svg)
 
+<!-- Suggested GitHub topics (set in the repo's About panel): mcp · ai-agents · agent-memory · knowledge-base · obsidian · sqlite · local-first · llm -->
+
 **Long-term memory for your AI agents — that you can read and edit like a wiki.**
 
 Your agents remember things by writing facts into wiki-brain and recalling them
