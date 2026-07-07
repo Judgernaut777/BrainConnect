@@ -162,11 +162,13 @@ def tool_capture(repo: Repo, text: str, harness: str = DEFAULT_HARNESS) -> dict:
 
 # --- client config helper (for `wiki mcp info`) -----------------------------
 
-def client_config(repo: Repo, *, read_only: bool = False) -> dict:
+def client_config(repo: Repo, *, read_only: bool = False, contribute_only: bool = False) -> dict:
     """The JSON snippet to paste into an MCP client (e.g. Claude Desktop)."""
     args = ["mcp", "serve"]
     if read_only:
         args.append("--read-only")
+    if contribute_only:
+        args.append("--contribute-only")
     return {
         "mcpServers": {
             SERVER_NAME: {
@@ -184,11 +186,18 @@ class McpUnavailable(Exception):
     pass
 
 
-def build_server(*, read_only: bool = False, root=None):
+def build_server(*, read_only: bool = False, contribute_only: bool = False, root=None):
     """Construct the FastMCP server and register tools. Separated from `serve()`
     so the wiring is testable without blocking on stdio. Opens a fresh Repo per
     tool call (WAL-safe; keeps `capture` writes from holding a long-lived
-    connection)."""
+    connection).
+
+    Modes (mutually exclusive): default = all tools; ``read_only`` = the four read
+    tools with no ``brain_capture``; ``contribute_only`` = ONLY ``brain_capture`` —
+    the write-only face for an agent fleet that may contribute findings but must not
+    read the brain back (no recall path)."""
+    if read_only and contribute_only:
+        raise ValueError("read_only and contribute_only are mutually exclusive")
     try:
         from mcp.server.fastmcp import FastMCP  # type: ignore
     except ImportError as e:
@@ -207,34 +216,35 @@ def build_server(*, read_only: bool = False, root=None):
         with Repo.open(resolved_root) as repo:
             return json.dumps(fn(repo), ensure_ascii=False, indent=2)
 
-    @server.tool()
-    def brain_search(terms: str, promoted_only: bool = True, limit: int = 20) -> str:
-        """Keyword (FTS5) search over the knowledge base's claims and summaries.
-        promoted_only=True (default) returns only vetted truth; set False to also
-        see unvetted pending material (labeled by `status`)."""
-        return _run(lambda r: tool_search(r, terms, promoted_only, limit))
+    if not contribute_only:
+        @server.tool()
+        def brain_search(terms: str, promoted_only: bool = True, limit: int = 20) -> str:
+            """Keyword (FTS5) search over the knowledge base's claims and summaries.
+            promoted_only=True (default) returns only vetted truth; set False to also
+            see unvetted pending material (labeled by `status`)."""
+            return _run(lambda r: tool_search(r, terms, promoted_only, limit))
 
-    @server.tool()
-    def brain_hybrid(query: str, k: int = 10, promoted_only: bool = True) -> str:
-        """Best-quality retrieval: fuses keyword and local semantic search.
-        Returns the top-k claims ranked by reciprocal-rank fusion. promoted_only
-        (default True) restricts to vetted truth; set False to include unvetted
-        pending claims (labeled by `status`)."""
-        return _run(lambda r: tool_hybrid(r, query, k, promoted_only))
+        @server.tool()
+        def brain_hybrid(query: str, k: int = 10, promoted_only: bool = True) -> str:
+            """Best-quality retrieval: fuses keyword and local semantic search.
+            Returns the top-k claims ranked by reciprocal-rank fusion. promoted_only
+            (default True) restricts to vetted truth; set False to include unvetted
+            pending claims (labeled by `status`)."""
+            return _run(lambda r: tool_hybrid(r, query, k, promoted_only))
 
-    @server.tool()
-    def brain_graph(entity: str, hops: int = 1, promoted_only: bool = True) -> str:
-        """Walk the context graph from an entity, returning related entities and
-        the relations between them (each backed by an evidence claim id).
-        promoted_only (default True) emits only edges whose evidence is vetted."""
-        return _run(lambda r: tool_graph(r, entity, hops, promoted_only))
+        @server.tool()
+        def brain_graph(entity: str, hops: int = 1, promoted_only: bool = True) -> str:
+            """Walk the context graph from an entity, returning related entities and
+            the relations between them (each backed by an evidence claim id).
+            promoted_only (default True) emits only edges whose evidence is vetted."""
+            return _run(lambda r: tool_graph(r, entity, hops, promoted_only))
 
-    @server.tool()
-    def brain_recall(query: str, k: int = recall_k) -> str:
-        """One-shot context pack for answering a question: top claims split into
-        promoted (vetted) vs pending (unvetted), plus relevant approved synthesis
-        prose. Synthesize your answer from the promoted material and cite ids."""
-        return _run(lambda r: tool_recall(r, query, k))
+        @server.tool()
+        def brain_recall(query: str, k: int = recall_k) -> str:
+            """One-shot context pack for answering a question: top claims split into
+            promoted (vetted) vs pending (unvetted), plus relevant approved synthesis
+            prose. Synthesize your answer from the promoted material and cite ids."""
+            return _run(lambda r: tool_recall(r, query, k))
 
     if not read_only:
         @server.tool()
@@ -248,6 +258,6 @@ def build_server(*, read_only: bool = False, root=None):
     return server
 
 
-def serve(*, read_only: bool = False, root=None) -> None:
+def serve(*, read_only: bool = False, contribute_only: bool = False, root=None) -> None:
     """Build and run the stdio MCP server (blocks until the client disconnects)."""
-    build_server(read_only=read_only, root=root).run()
+    build_server(read_only=read_only, contribute_only=contribute_only, root=root).run()

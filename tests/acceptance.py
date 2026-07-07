@@ -989,6 +989,27 @@ def main():
         check("read-only client config carries --read-only",
               "--read-only" in srv["args"])
 
+        # contribute-only: the write-only face for an agent fleet (brain_capture
+        # exposed, no recall path). Config snippet carries the flag; the flag is
+        # mutually exclusive with --read-only.
+        ccw = mcpmod.client_config(r, contribute_only=True)
+        srvw = ccw["mcpServers"]["wiki-brain"]
+        check("contribute-only client config carries --contribute-only",
+              "--contribute-only" in srvw["args"])
+        check("contribute-only client config omits --read-only",
+              "--read-only" not in srvw["args"])
+        mx_blocked = False
+        try:
+            mcpmod.build_server(read_only=True, contribute_only=True, root=r.root)
+        except ValueError:
+            mx_blocked = True
+        except mcpmod.McpUnavailable:
+            # No [mcp] extra in this env: the mutual-exclusion guard is checked
+            # BEFORE the FastMCP import, so a ValueError should still have fired
+            # first. Reaching McpUnavailable means the guard did NOT trip.
+            mx_blocked = False
+        check("read_only + contribute_only is rejected (mutually exclusive)", mx_blocked)
+
     # ---------------- Librarian (event-driven judgment, model stubbed) --------
     print("[librarian] extraction pass with a stubbed OpenAI-compatible model")
     from librarian.config import LibrarianConfig

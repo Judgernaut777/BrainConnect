@@ -674,22 +674,29 @@ def _dispatch_skill(repo, args):
 def cmd_mcp(args):
     # The --read-only flag forces it on; otherwise honor the [mcp] config default.
     read_only = args.read_only or bool(Config.load().mcp_cfg("read_only"))
+    contribute_only = getattr(args, "contribute_only", False)
+    if read_only and contribute_only:
+        sys.exit("error: --read-only and --contribute-only are mutually exclusive")
     if args.mcmd == "serve":
         try:
-            mcpmod.serve(read_only=read_only)
+            mcpmod.serve(read_only=read_only, contribute_only=contribute_only)
         except mcpmod.McpUnavailable as e:
             sys.exit(f"error: {e}")
     elif args.mcmd == "info":
         with Repo.open() as repo:
-            cfg = mcpmod.client_config(repo, read_only=read_only)
+            cfg = mcpmod.client_config(repo, read_only=read_only, contribute_only=contribute_only)
         if _emit(cfg, getattr(args, "json", False)):
             return
         print("Add this to your MCP client config (e.g. Claude Desktop's "
               "claude_desktop_config.json):\n")
         print(json.dumps(cfg, indent=2))
-        print("\nThe server exposes read-only retrieval tools "
-              "(brain_search/hybrid/graph/recall)"
-              + ("." if read_only else " plus brain_capture (gated write)."))
+        if contribute_only:
+            print("\nThe server exposes ONLY brain_capture — write-only, no recall "
+                  "(the face for an agent fleet that may contribute but must not read back).")
+        else:
+            print("\nThe server exposes read-only retrieval tools "
+                  "(brain_search/hybrid/graph/recall)"
+                  + ("." if read_only else " plus brain_capture (gated write)."))
 
 
 # --- parser -----------------------------------------------------------------
@@ -886,7 +893,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcserve = mcsub.add_parser("serve", help="run the stdio MCP server")
     mcserve.add_argument("--read-only", action="store_true",
                          help="disable the brain_capture write tool")
+    mcserve.add_argument("--contribute-only", action="store_true",
+                         help="expose ONLY brain_capture (write-only; no recall) — for an agent fleet")
     mcinfo = mcsub.add_parser("info", help="print MCP client config snippet")
+    mcinfo.add_argument("--contribute-only", action="store_true",
+                        help="emit a config for a write-only (contribute-only) server")
     mcinfo.add_argument("--read-only", action="store_true",
                         help="emit a config for a read-only server")
     addj(mcinfo)
