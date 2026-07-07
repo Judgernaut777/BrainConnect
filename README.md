@@ -305,7 +305,7 @@ gateway is reachable before a pass; `network_retries` covers the hop to it.
 - **Key-free.** No API keys anywhere in the project; headless model children are
   denied in settings, so model work only happens in an interactive agent session.
 - The live DB lives at an absolute path outside the tree (default
-  `~/.wiki-brain/wiki.db`) so scheduled-task worktrees share one truth.
+  `~/.wiki-brain/wiki.db`) so separate worktrees and processes share one truth.
 - **Provenance is enforced.** Every source artifact is hash-verified on the way
   in and again whenever it's filed into `raw/<bucket>/<year>/`; only human-gated
   `promoted` claims ever reach the wiki, the skills, or MCP results.
@@ -333,7 +333,7 @@ py -m venv .venv
 ```
 `config.toml` is git-ignored (it holds your machine-specific paths); the tracked
 `config.example.toml` is the template. The live DB lives at an absolute path
-**outside** the repo so scheduled-task worktrees share one source of truth.
+**outside** the repo so separate worktrees and processes share one source of truth.
 
 Same setup on Linux/macOS:
 ```bash
@@ -357,7 +357,7 @@ Run the CLI any of these ways:
   `.cmd`/`.ps1`, because the repo root also holds the generated `wiki/` vault
   — a bare `wiki` file there would collide with it), or
 - add the venv's script dir to PATH, or `pipx install ./cli` into a PATH'd Python
-  so scheduled tasks can call a bare `wiki`.
+  so any shell or worktree can call a bare `wiki`.
 
 ## Quick tour
 ```powershell
@@ -493,20 +493,18 @@ stays your call). This is the primary path in [Use it in 5 minutes](#use-it-in-5
 > The librarian is the model-bearing half by design. The original key-free,
 > subscription-only posture (below) is still fully supported — point the
 > librarian at a local Ollama, or skip it entirely and run the judgment passes
-> inside interactive/scheduled Claude Code sessions as before.
+> inside an interactive Claude Code session as before.
 
-## Scheduled maintenance
-If you prefer a clock to events, maintenance splits in two: a **zero-model** half
-(bookmarks sync, gate, render, lint, health, commit) that is pure code, and a
-**judgment** half (claim extraction, synthesis, contradiction adjudication, skill
-drafting) that needs a model. Both stay key-free — pick the cadence that fits.
+## Optional: a housekeeping timer (pure code)
+The librarian runs the judgment half **event-driven** (above), so nothing needs a
+schedule. The one thing you might still want on a clock is the **zero-model**
+housekeeping — bookmarks sync, gate, render, lint, health, commit — which makes no
+model calls. Point a timer at `scripts/mechanical-maintain.ps1` (Windows) or
+`scripts/mechanical-maintain.sh` (POSIX); it commits locally and never pushes, so
+you review the diff. Add `wiki-librarian catch-up` to the same job if you want a
+belt-and-suspenders backlog drain.
 
-**Hybrid — no agent for the mechanical half.** A plain Windows Task Scheduler job
-runs `scripts/mechanical-maintain.ps1` daily (the zero-model steps only, no agent
-at all), and you run the judgment half interactively in your agent (the
-`maintain.md` procedure) when convenient. The script commits locally and never
-pushes — you review the diff.
-Register it (runs whether or not you're logged on, no stored password):
+**Windows Task Scheduler** — register it (runs whether or not you're logged on, no stored password):
 ```powershell
 $repo = "C:\path\to\wiki-brain"
 Register-ScheduledTask -TaskName "wiki-brain mechanical maintain" `
@@ -552,23 +550,9 @@ WantedBy=timers.target
 systemctl --user enable --now wiki-brain-maintain.timer
 ```
 
-**Fully autonomous — a scheduled agent runner.** Point any agent that supports
-cron/scheduled runs at the two maintenance procedures (working folder = this repo;
-isolated worktree if supported). Use a cheaper model for the nightly pass and a
-stronger one for the morning pass:
-
-| Task | ~Time | Model | Procedure |
-|---|---|---|---|
-| `night-gather` | 02:00 daily | cheaper | `Follow .claude/skills/wiki-maintainer/gather.md exactly.` |
-| `morning-maintain` | 06:30 daily | stronger | `Follow .claude/skills/wiki-maintainer/maintain.md exactly.` |
-
-Generated `wiki/` + `db/dump.sql` commit from the worktree branch; fast-forward to
-`main` on success. The live DB is shared via its absolute path, so every task sees
-the same truth.
-
-> The MCP server can't run these itself — it's a passive tool host with no model.
-> The timer and zero-model steps need no agent (Task Scheduler handles them), but
-> the judgment half always needs a model-bearing client.
+This is pure code — no agent, no model, no keys. The judgment half stays with the
+**event-driven librarian** (above); if you ever want to force a full sweep on a
+timer instead, run `wiki-librarian maintain` from the same job.
 
 ## Cost & keys
 The project holds **no API keys** and the CLI makes **no model calls**, so the
@@ -589,21 +573,10 @@ follows: `gather.md` (night), `maintain.md` (morning / `/maintain`), `capture.md
 
 **Subscription-only, no metered API** (BUILD_SPEC §1.5, §10). No API keys exist
 anywhere, and `claude -p` / `claude --print` / other headless children are denied
-in `.claude/settings.json` — all model work happens inside interactive or
-scheduled Claude Code sessions, on the subscription, never the metered API. After
-a few days of scheduled runs, check the account usage page; expect **zero
-Agent-SDK credit** drawn. If credit *is* drawn, disable the tasks and fall back to
-interactive `/maintain`.
-
-**Scheduled Routines.** Two Desktop scheduled tasks via the **Routines** UI
-(working folder = this repo, **Isolated worktree** ON):
-
-| Routine | ~Time | Model | Prompt |
-|---|---|---|---|
-| `night-gather` | 02:00 daily | **Haiku** | `Follow .claude/skills/wiki-maintainer/gather.md exactly.` |
-| `morning-maintain` | 06:30 daily | **Sonnet** | `Follow .claude/skills/wiki-maintainer/maintain.md exactly.` |
-
-Haiku does the cheap night gather; Sonnet does the gated morning maintain.
+in `.claude/settings.json` — all model work happens inside interactive Claude Code
+sessions, on the subscription, never the metered API. Expect **zero Agent-SDK
+credit** drawn; if any *is*, that boundary has been crossed somewhere and is worth
+checking.
 
 **Authored skills.** `wiki skill approve` renders a skill from promoted claims to
 `.claude/skills/<name>/`; `wiki skill install` copies it to `~/.claude/skills/` so
@@ -611,7 +584,7 @@ it's active in every Claude Code session. Both are human-gated.
 
 **Live capture & MCP.** In any Claude Code session in this repo, call
 `wiki capture --origin claude-code "<finding>"` to file a durable finding (it
-enters as pending, faces the morning gate). To wire the brain into Claude Desktop
+enters as pending, faces the human gate). To wire the brain into Claude Desktop
 as an MCP client, `wiki mcp info` prints the snippet for `claude_desktop_config.json`.
 
 ## Acknowledgments
