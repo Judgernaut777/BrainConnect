@@ -457,25 +457,52 @@ timer, if you want belt-and-suspenders). Per-task model routing lets a cheap
 local model do high-volume extraction while a stronger one is reserved for the
 harder passes — see `[librarian.models]` in `config.example.toml`.
 
-**Ingesting from multiple folders.** Beyond the single drop folder, point the
-brain at any directories you already keep files in — a papers library, a notes
-vault, a downloads inbox — with `[[paths.sources]]` entries in `config.toml`.
-`wiki drop` and the `watch` loop scan every one:
+### Ingesting from multiple folders
+Beyond the single drop folder, point the brain at any directories you already keep
+files in — a papers library, a notes vault, a downloads inbox — and it pulls from
+all of them.
+
+**1. Add a `[[paths.sources]]` block per folder** in `config.toml` (repeat the
+block for each). Only `path` is required:
 ```toml
 [[paths.sources]]
 path      = "~/Documents/papers"
 origin    = "papers"     # provenance tag on ingested sources (default "drop")
-recursive = true         # descend into subfolders
-include   = ["*.pdf"]    # only these globs (default: all files)
-move      = false        # leave your originals in place (the default)
+recursive = true         # descend into subfolders (default false)
+include   = ["*.pdf"]    # only files matching these globs (default: all files)
+move      = false        # leave your originals in place (default; true archives them)
+
+[[paths.sources]]
+path    = "~/notes"      # a second folder — different settings
+origin  = "notes"
+include = ["*.md", "*.txt"]
 ```
-Files are **left in place by default** — a global content-hash dedup means
-re-scanning a folder never re-ingests, so it's safe to watch real directories you
-also use elsewhere (only the legacy `drop_folder` archives originals to
-`.processed/`). `recursive` walks subfolders, and `include` scopes a noisy
-directory to just the file types you want — that filter plus the human gate keep
-a big folder from flooding the model. A few origin tags are reserved (`clip`,
-`transcript`, `session/*`, `autoresearch`); pick anything else.
+
+| Key | Default | What it does |
+|---|---|---|
+| `path` | *(required)* | The folder to ingest from (`~` expands). |
+| `origin` | `"drop"` | Provenance tag on each ingested source. Avoid the reserved tags `clip`, `transcript`, `session/*`, `autoresearch`. |
+| `recursive` | `false` | Descend into subfolders. |
+| `include` | *(all files)* | List of `fnmatch` globs — only matching files are ingested. |
+| `move` | `false` | `true` archives originals to `<folder>/.processed/` after ingest; `false` leaves them untouched. |
+
+**2. Pull the files in** — either on demand or continuously:
+```bash
+wiki drop              # one-shot: scan every configured folder now
+wiki-librarian watch   # continuous: watch all folders + re-extract as files land
+```
+`wiki drop` ingests and (with `auto_extract`) fires extraction; `watch` keeps
+running and reacts to new/changed files (recursively where `recursive = true`).
+
+**3. Review at the gate** as usual — everything lands `pending`; `wiki triage`,
+`wiki promote/reject`. Nothing an ingested file produces becomes trusted without you.
+
+**Why this is safe on real directories.** Files are **left in place by default**,
+and a global content-hash dedup means re-scanning a folder never re-ingests — so
+you can point it straight at `~/Downloads` or a shared library without it moving or
+duplicating anything (only the legacy `drop_folder` archives originals). `include`
+scopes a noisy folder to just the file types you want, and the human gate is the
+backstop — together they keep a big folder from flooding the model.
 
 **Triage (advisory).** The auto-gate promotes the easy tier and holds the rest.
 `wiki-librarian triage` adds model judgment on the held claims — a
