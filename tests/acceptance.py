@@ -1003,6 +1003,22 @@ def main():
                       "error" in refused and "fascia-guard" in refused["error"])
                 okc = mcpmod.tool_capture(gr, "The cache TTL is 300 seconds.", "mcp")
                 check("guard enforce: clean capture still stored", okc.get("status") == "new")
+                # recall-side secret masking: a credential stored as a promoted
+                # claim (e.g. pre-guard) is masked on the way out, knowledge kept.
+                # Build the key by concatenation so this file doesn't itself trip
+                # the "no API-key-like secrets in tracked files" self-scan above.
+                _awskey = "AKIA" + "IOSFODNN7EXAMPLE"
+                cur = gr.ex("INSERT INTO sources(hash, path, origin, status) "
+                            "VALUES ('gs','raw/s.md','clip','new')")
+                gr.ex("INSERT INTO claims(text, source_id, location, confidence, origin, "
+                      "status, created_at) VALUES (?,?,?,?,?,?, datetime('now'))",
+                      (f"Legacy deploy key {_awskey} rotates quarterly.",
+                       cur.lastrowid, "s1", 0.9, "clip", "promoted"))
+                gr.conn.commit()
+                rsec = mcpmod.tool_recall(gr, "legacy deploy key rotates quarterly", k=5)
+                _texts = " ".join(x.get("text", "") for x in rsec["promoted"] + rsec["pending"])
+                check("guard enforce: recalled secret is masked",
+                      _awskey not in _texts and "rotates quarterly" in _texts)
             os.environ.pop("FASCIA_GUARD_ENFORCE", None)
             os.environ["FASCIA_GUARD"] = "1"
             groot2 = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-guard2-")))

@@ -28,6 +28,7 @@ try:  # soft dependency
         guard_before_store,
         guard_on_recall,
         has_secret,
+        redact_secret_spans,
     )
     _AVAILABLE = True
 except Exception:  # pragma: no cover - only when the package is absent
@@ -66,6 +67,18 @@ def check_recall(text: str):
 
 def carries_secret(verdict) -> bool:
     return _AVAILABLE and verdict is not None and has_secret(verdict)
+
+
+def redact_secrets(text: str) -> str:
+    """Mask secret spans in recalled text when enforcing; identity otherwise.
+
+    Secrets must never be returned from memory. Applied per-claim at recall so a
+    credential stored before the guard existed (or by another writer) is masked on
+    the way out. Cheap (builtin regex only) — safe for the recall hot path.
+    """
+    if not enforcing() or not text:
+        return text
+    return redact_secret_spans(text)
 
 
 def categories(verdict) -> list[str]:
