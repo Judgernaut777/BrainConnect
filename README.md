@@ -93,6 +93,12 @@ Agents reach the same concepts over MCP: `brain_recall`, `brain_capture`,
 `brain_reject` exist only under `wiki mcp serve --review` — never point an agent
 at that.
 
+**Trust rule for consumers:** `trusted: true` is the authority signal —
+`status: "promoted"` is not. A promoted claim in an open contradiction comes back
+`promoted` *and* untrusted. A missing `trusted` means untrusted; never infer it from
+`status`. (Reaching wiki-brain over HTTP needs a `wiki serve` that does not exist
+yet — see [docs/LEDGER_SPEC.md §14.2](docs/LEDGER_SPEC.md).)
+
 ---
 
 ## Use it in 5 minutes

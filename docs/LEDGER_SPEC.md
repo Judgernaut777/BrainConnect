@@ -356,7 +356,52 @@ health() -> dict
 AgentConnect must not need to know WikiBrain internals. WikiBrain accepts, and
 stores opaquely where it does not own the concept: `task_id`, `source_ref`,
 `origin_actor_id`, `origin_actor_type`, `scope`, `profile`, `trusted_only`,
-`max_items`.
+`max_items`. `origin_actor_id` / `origin_actor_type` are accepted as aliases for
+`proposed_by` / `proposed_by_type`; supplying both with conflicting values is an
+error, never a guess.
+
+### 14.1 The trust contract (load-bearing)
+
+> **`trusted is True` is the authority signal. `status == "promoted"` is not.**
+
+A promoted claim in an open contradiction is returned `status: "promoted"`,
+`trusted: false`, `contradiction_status: "open"`. Any consumer keying trust off
+`status` will hand a disputed claim to an agent as established truth.
+
+Rules for a consumer:
+
+- Absence of `trusted` means **untrusted**. Never infer trust from `status`.
+- Only WikiBrain (and the consumer's own ledger / locked decisions) may confer
+  trust. A retrieval backend reporting `trusted: true` cannot grant itself
+  authority — the verdict may only ever *downgrade*.
+- With the defaults (`trusted_only=true`, `include_pending=false`) **every item in
+  a RecallPack has `trusted: true`.** Disputed and pending material is withheld and
+  announced in `warnings`; opting into it is always explicit and always labeled.
+
+Verified end-to-end by `mcp-agentconnect/tests/test_wikibrain_integration.py`, which
+drives a real ledger through AgentConnect's adapter, ranker and ContextBuilder.
+
+### 14.2 Follow-up: the transport gap
+
+**WikiBrain ships no HTTP server.** AgentConnect's `WikiBrainMemoryAdapter` expects a
+REST service at `http://localhost:8787`:
+
+```
+POST /recall            POST /candidates/{candidate_id}/promote
+POST /capture           GET  /candidates?status=pending&limit=
+POST /feedback          GET  /health
+```
+
+The cross-repo integration test closes this today by injecting a `transport` that
+dispatches those routes straight into `wiki.api` in-process. That is deliberate and
+sufficient for the boundary it tests: it exercises the real ledger, real promotion,
+the real trust filter, and the real API field shape. What it does not exercise is
+wire plumbing — serialisation, status codes, auth, timeouts.
+
+**`wiki serve` is a separate, later change.** It is tracked here rather than folded
+into the semantic work so the trust boundary and the transport surface cannot be
+confused for one another: a green integration suite means the *semantics* agree, not
+that the network path exists.
 
 ## 15. Acceptance criteria
 
