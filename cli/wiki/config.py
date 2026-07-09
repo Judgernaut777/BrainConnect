@@ -53,6 +53,20 @@ DEFAULTS = {
         "read_only": False,     # if True, `wiki mcp serve` omits the capture write tool
         "recall_k": 8,          # default top-k claims returned by brain_recall
     },
+    "retrieval": {
+        # Which retrieval backend serves recall (LEDGER_SPEC.md §8). The backend
+        # returns *candidates*; WikiBrain applies trust/status/scope filtering
+        # afterwards, so a backend can degrade recall quality but never widen
+        # trust. Only `sqlite_fts` ships today; graphiti/cognee/qdrant/chroma/
+        # llamaindex are the planned adapters. Unknown names fail loudly.
+        "backend": "sqlite_fts",
+        "profile": "manager_brief",  # default recall profile
+        "max_items": 8,              # default bound on a RecallPack
+        # How many candidates to ask the backend for per requested item. Trust and
+        # scope filtering happens after retrieval, so the backend must over-fetch
+        # or a bounded pack could come back short.
+        "overfetch": 4,
+    },
 }
 
 
@@ -186,3 +200,6 @@ class Config:
 
     def mcp_cfg(self, key: str):
         return self.data["mcp"].get(key)
+
+    def retrieval_cfg(self, key: str):
+        return self.data["retrieval"].get(key)

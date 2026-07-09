@@ -12,10 +12,22 @@ from pathlib import Path
 
 from .db import Repo
 from .entities import page_kind_for
-from . import util
+from . import confidence as confmod, refs, util
 
 SYNTH_START = "<!-- synthesis:start -->"
 SYNTH_END = "<!-- synthesis:end -->"
+
+LEDGER_PATH = "wiki/ledger.md"
+
+# Which promoted claims land in which ledger section, by tag (LEDGER_SPEC.md §13).
+# First match wins, so the order here is the section precedence; anything matching
+# none of them falls through to "Project facts".
+LEDGER_SECTIONS = (
+    ("Decisions", ("decision",)),
+    ("Constraints", ("constraint",)),
+    ("Known failures", ("known-failure", "failure", "gotcha")),
+    ("Model/worker performance", ("model-performance",)),
+)
 
 
 # --- dirty tracking (imported by review/gate) -------------------------------
@@ -99,6 +111,41 @@ def _rel_link(from_path: str, to_path: str) -> str:
     return rel
 
 
+# --- ledger labels ----------------------------------------------------------
+def _scope_str(row) -> str:
+    return (row["scope_type"] if row["scope_type"] == "global"
+            else f"{row['scope_type']}:{row['scope_id']}")
+
+
+def _claim_labels(row) -> str:
+    """`scope: repo:x, confidence: verified` — the trust metadata on a claim line.
+
+    Deterministic: derived from stored columns only, never wall-clock. A
+    `valid_until` is shown as-is so a reader can see an expiry without the page
+    changing meaning between renders.
+    """
+    bits = [f"scope: {_scope_str(row)}", f"confidence: {confmod.label_of(row)}"]
+    try:
+        if row["valid_until"]:
+            bits.append(f"until: {row['valid_until']}")
+    except (KeyError, IndexError):
+        pass
+    return " — " + ", ".join(bits)
+
+
+def _contradicted_ids(repo: Repo) -> set[int]:
+    """Claims on either side of an OPEN contradiction. A warning, not a deletion."""
+    out = set()
+    for r in repo.q("SELECT claim_a, claim_b FROM contradictions WHERE status='open'"):
+        out.add(r["claim_a"])
+        out.add(r["claim_b"])
+    return out
+
+
+def _contradiction_flag(row, contradicted: set[int]) -> str:
+    return " ⚠️ **contradicted**" if row["id"] in contradicted else ""
+
+
 # --- content builders -------------------------------------------------------
 def _entity_updated(repo: Repo, entity_id: int) -> str:
     row = repo.one(
@@ -162,12 +209,14 @@ def _render_entity(repo: Repo, page) -> tuple[str, str, str]:
     # promoted claims
     out += ["## Claims", ""]
     if claims:
+        contradicted = _contradicted_ids(repo)
         for c in claims:
             src_path = _source_page_path(repo, c["s_id"])
             link = _rel_link(path, src_path)
             title = c["s_title"] or f"source #{c['s_id']}"
             out.append(
-                f"- {c['text']} ([{title}]({link}), origin: {c['s_origin']}) "
+                f"- {c['text']} ([{title}]({link}), origin: {c['s_origin']})"
+                f"{_claim_labels(c)}{_contradiction_flag(c, contradicted)} "
                 f"`#{c['id']}`")
     else:
         out.append("_No promoted claims yet._")
@@ -410,6 +459,12 @@ def _reconcile(repo: Repo) -> bool:
     if not repo.one("SELECT 1 FROM pages WHERE kind='index'"):
         repo.ex("INSERT INTO pages(path, kind, dirty) VALUES ('wiki/index.md','index',1)")
         changed = True
+    # ledger page — like the index, always refreshed, so it never needs dirty
+    # tracking when a candidate or a contradiction changes underneath it.
+    if not repo.one("SELECT 1 FROM pages WHERE kind='ledger'"):
+        repo.ex("INSERT INTO pages(path, kind, dirty) VALUES (?,'ledger',1)",
+                (LEDGER_PATH,))
+        changed = True
     return changed
 
 
@@ -420,9 +475,114 @@ def _delete_page(repo: Repo, row):
     repo.ex("DELETE FROM pages WHERE id = ?", (row["id"],))
 
 
+# --- ledger -----------------------------------------------------------------
+def _ledger_section_for(tags: list[str]) -> str:
+    for label, wanted in LEDGER_SECTIONS:
+        if set(tags) & set(wanted):
+            return label
+    return "Project facts"
+
+
+def _ledger_claim_line(repo: Repo, row, contradicted: set[int]) -> str:
+    src_path = _source_page_path(repo, row["source_id"])
+    link = _rel_link(LEDGER_PATH, src_path)
+    title = row["s_title"] or f"source #{row['source_id']}"
+    line = (f"- {row['text']}{_claim_labels(row)}"
+            f"{_contradiction_flag(row, contradicted)} "
+            f"([{title}]({link})) `{refs.claim(row['id'])}`")
+    if row["superseded_by"]:
+        line += f" → superseded by `{refs.claim(row['superseded_by'])}`"
+    return line
+
+
+def _render_ledger(repo: Repo) -> str:
+    """The trusted-memory view (LEDGER_SPEC.md §13).
+
+    Promoted claims grouped by tag, then the superseded record, then the pending
+    review queue, then the evidence. Pending candidates render in their own clearly
+    labeled section — never as trusted knowledge.
+
+    Byte-deterministic: every query is `ORDER BY id`, and nothing here reads the
+    clock.
+    """
+    out = ["---", "title: ledger", "tags: [ledger]", "---", "",
+           "# Trusted memory ledger", "",
+           "_Generated from the database. Never hand-edit._", ""]
+    contradicted = _contradicted_ids(repo)
+
+    promoted = repo.q(
+        """SELECT c.*, s.title AS s_title FROM claims c
+           JOIN sources s ON s.id = c.source_id
+           WHERE c.status = 'promoted' ORDER BY c.id""")
+    grouped: dict[str, list] = {}
+    for row in promoted:
+        section = _ledger_section_for(json.loads(row["tags"] or "[]"))
+        grouped.setdefault(section, []).append(row)
+
+    # Fixed section order so the page is stable as tags come and go.
+    for label in ("Project facts", *[s for s, _ in LEDGER_SECTIONS]):
+        rows = grouped.get(label, [])
+        out += [f"## {label} ({len(rows)})", ""]
+        out += [_ledger_claim_line(repo, r, contradicted) for r in rows] or ["_None._"]
+        out += [""]
+
+    superseded = repo.q(
+        """SELECT c.*, s.title AS s_title, sup.reason AS sup_reason
+             FROM claims c JOIN sources s ON s.id = c.source_id
+             LEFT JOIN supersessions sup ON sup.old_claim_id = c.id
+            WHERE c.status = 'superseded' ORDER BY c.id""")
+    out += [f"## Superseded facts ({len(superseded)})", ""]
+    if superseded:
+        for r in superseded:
+            line = _ledger_claim_line(repo, r, contradicted)
+            if r["sup_reason"]:
+                line += f" — _{r['sup_reason']}_"
+            out.append(line)
+    else:
+        out.append("_None._")
+    out += [""]
+
+    pend = repo.q(
+        "SELECT * FROM memory_candidates WHERE status='pending' ORDER BY id")
+    out += [f"## Pending candidates ({len(pend)})", "",
+            "_Proposed, **not** trusted. Nothing here is established knowledge "
+            "until a human promotes it._", ""]
+    if pend:
+        for r in pend:
+            tags = json.loads(r["tags"] or "[]")
+            tag_txt = f" tags: {', '.join(tags)}" if tags else ""
+            out.append(f"- {r['text']} — proposed by {r['proposed_by']} "
+                       f"({r['proposed_by_type']}){tag_txt} "
+                       f"`{refs.candidate(r['id'])}`")
+    else:
+        out.append("_None._")
+    out += [""]
+
+    cited = repo.q(
+        """SELECT DISTINCT s.id, s.title, s.origin FROM sources s
+             JOIN claim_sources cs ON cs.source_id = s.id
+             JOIN claims c ON c.id = cs.claim_id
+            WHERE c.status = 'promoted' ORDER BY s.id""")
+    out += [f"## Sources ({len(cited)})", ""]
+    if cited:
+        for r in cited:
+            link = _rel_link(LEDGER_PATH, _source_page_path(repo, r["id"]))
+            title = r["title"] or f"source #{r['id']}"
+            out.append(f"- [{title}]({link}) — origin: {r['origin']} "
+                       f"`{refs.source(r['id'])}`")
+    else:
+        out.append("_None._")
+    out += [""]
+
+    return "\n".join(out).rstrip() + "\n"
+
+
 # --- index ------------------------------------------------------------------
 def _render_index(repo: Repo) -> str:
     out = ["---", "title: index", "tags: [index]", "---", "", "# Wiki Index", ""]
+    if repo.one("SELECT 1 FROM pages WHERE kind='ledger'"):
+        out += [f"→ [Trusted memory ledger]({_rel_link('wiki/index.md', LEDGER_PATH)})",
+                ""]
     sections = [
         ("Entities", "entity"),
         ("Concepts", "concept"),
@@ -473,9 +633,10 @@ def render(repo: Repo, all_pages: bool = False) -> dict:
     report = {"rendered": [], "needs_synthesis_review": [], "fresh": [], "changed": created_or_deleted}
 
     for page in rows:
-        # work set: dirty pages, plus the index (always refreshed here so it
-        # reflects the current page set even when nothing else is dirty).
-        if not all_pages and not page["dirty"] and page["kind"] != "index":
+        # work set: dirty pages, plus the index and the ledger (always refreshed
+        # here so they reflect current state even when nothing else is dirty —
+        # a promoted candidate or a new contradiction dirties no entity page).
+        if not all_pages and not page["dirty"] and page["kind"] not in ("index", "ledger"):
             continue
         if page["kind"] in ("entity", "concept"):
             content, cur_hash, _ = _render_entity(repo, page)
@@ -492,6 +653,8 @@ def render(repo: Repo, all_pages: bool = False) -> dict:
             content, _, _ = _render_digest(repo, page)
         elif page["kind"] == "index":
             content = _render_index(repo)
+        elif page["kind"] == "ledger":
+            content = _render_ledger(repo)
         else:
             continue
 

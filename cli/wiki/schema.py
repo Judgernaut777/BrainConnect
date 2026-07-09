@@ -21,6 +21,11 @@ CREATE TABLE sources (
   tags TEXT NOT NULL DEFAULT '[]'  -- JSON array of session-assigned tags
 );
 
+-- claims carry both representations of confidence: the numeric `confidence` the
+-- auto-gate compares against, and the ordinal `confidence_label` the ledger API
+-- speaks (see LEDGER_SPEC.md §5.3). `source_id` stays NOT NULL and single — the
+-- renderer, the gate's corroboration count and every pre-ledger query read it —
+-- while `claim_sources` adds many-to-many provenance alongside it.
 CREATE TABLE claims (
   id INTEGER PRIMARY KEY,
   text TEXT NOT NULL,
@@ -30,7 +35,16 @@ CREATE TABLE claims (
   origin TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   superseded_by INTEGER REFERENCES claims(id),
-  created_at TEXT NOT NULL, reviewed_at TEXT
+  created_at TEXT NOT NULL, reviewed_at TEXT,
+  -- ledger (v9): scope, ordinal confidence, tags, validity, provenance of promotion
+  scope_type TEXT NOT NULL DEFAULT 'global',
+  scope_id TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',   -- JSON array; drives profiles + ledger sections
+  confidence_label TEXT,             -- low | medium | high | verified
+  valid_from TEXT, valid_until TEXT,
+  learned_at TEXT, last_verified_at TEXT,
+  promoted_by TEXT,                  -- reviewer who promoted (never an agent)
+  candidate_id INTEGER REFERENCES memory_candidates(id)
 );
 
 CREATE TABLE summaries (
@@ -62,13 +76,16 @@ CREATE TABLE claim_entities (
   PRIMARY KEY (claim_id, entity_id)
 );
 
+-- A contradiction is a WARNING, never an automatic deletion. `resolution` is the
+-- spec's resolution_note. status: open -> (resolved | false_positive).
 CREATE TABLE contradictions (
   id INTEGER PRIMARY KEY,
   claim_a INTEGER NOT NULL REFERENCES claims(id),
   claim_b INTEGER NOT NULL REFERENCES claims(id),
   status TEXT NOT NULL DEFAULT 'open',
   resolution TEXT,
-  proposal TEXT
+  proposal TEXT,
+  resolved_at TEXT, resolved_by TEXT
 );
 
 CREATE TABLE research_queue (
@@ -102,6 +119,7 @@ CREATE TABLE pages (
 -- graph traversal.
 CREATE INDEX claims_status ON claims(status);
 CREATE INDEX claims_source_id ON claims(source_id);
+CREATE INDEX claims_scope ON claims(scope_type, scope_id);
 CREATE INDEX claim_entities_entity_id ON claim_entities(entity_id);
 CREATE INDEX relations_dst ON relations(dst);
 
@@ -219,8 +237,80 @@ CREATE TABLE claim_triage (
 );
 """
 
-ALL_DDL = CORE_DDL + EXT_DDL
+# --- Ledger schema (v9; LEDGER_SPEC.md §5) ----------------------------------
+# The trusted-memory-ledger tables. Everything here exists to answer: what do we
+# trust, where did it come from, who promoted it, what scope does it apply to, is
+# it current, what superseded it.
+LEDGER_DDL = """
+-- A proposed memory that is NOT yet trusted. Agents may create these and ONLY
+-- these; capture never auto-promotes. `source_id` is the internal evidence row
+-- capture always files, so provenance is never dangling. `source_ref` is an
+-- OPAQUE external pointer (e.g. 'agentconnect_attempt_123') that WikiBrain
+-- stores and never resolves — AgentConnect owns what an attempt is.
+CREATE TABLE memory_candidates (
+  id INTEGER PRIMARY KEY,
+  text TEXT NOT NULL,
+  proposed_by TEXT NOT NULL,           -- actor id, e.g. 'claude-code'
+  proposed_by_type TEXT NOT NULL,      -- manager | worker | human | librarian | agent
+  source_id INTEGER REFERENCES sources(id),
+  source_ref TEXT,                     -- opaque external evidence pointer
+  task_id TEXT,                        -- opaque; AgentConnect owns task state
+  proposed_scopes TEXT NOT NULL DEFAULT '[]',  -- JSON [{scope_type, scope_id}]
+  tags TEXT NOT NULL DEFAULT '[]',     -- JSON array
+  created_at TEXT NOT NULL,
+  reviewed_at TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',      -- pending|promoted|rejected|archived
+  promoted_claim_id INTEGER REFERENCES claims(id),
+  review_reason TEXT,                  -- why rejected / note on promotion
+  reviewed_by TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX memory_candidates_status ON memory_candidates(status);
+
+-- Many-to-many provenance. Every claim keeps its NOT NULL claims.source_id; this
+-- adds the extra evidence, its type, and a quote/pointer into the source.
+CREATE TABLE claim_sources (
+  id INTEGER PRIMARY KEY,
+  claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+  source_id INTEGER NOT NULL REFERENCES sources(id),
+  evidence_type TEXT NOT NULL DEFAULT 'extracted',  -- extracted|quoted|derived|asserted
+  quote_or_pointer TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(claim_id, source_id, evidence_type)
+);
+CREATE INDEX claim_sources_claim_id ON claim_sources(claim_id);
+
+-- Supersession, with the reason and reviewer the denormalised
+-- claims.superseded_by pointer cannot carry.
+CREATE TABLE supersessions (
+  id INTEGER PRIMARY KEY,
+  old_claim_id INTEGER NOT NULL REFERENCES claims(id),
+  new_claim_id INTEGER NOT NULL REFERENCES claims(id),
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  created_by TEXT,
+  UNIQUE(old_claim_id, new_claim_id)
+);
+
+-- Retrieval-quality signal from managers/humans. An OBSERVATION, not a state
+-- transition: recording 'wrong' never demotes a claim, it surfaces for review.
+CREATE TABLE recall_feedback (
+  id INTEGER PRIMARY KEY,
+  claim_id INTEGER REFERENCES claims(id) ON DELETE CASCADE,
+  source_id INTEGER REFERENCES sources(id),
+  actor_id TEXT NOT NULL,
+  actor_type TEXT NOT NULL,            -- manager | worker | human | agent
+  feedback TEXT NOT NULL,              -- useful|irrelevant|stale|wrong|too_broad|missing_context
+  note TEXT,
+  task_id TEXT,                        -- opaque
+  created_at TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX recall_feedback_claim_id ON recall_feedback(claim_id);
+"""
+
+ALL_DDL = CORE_DDL + EXT_DDL + LEDGER_DDL
 
 # User-version stamped on the DB. Keep in sync with migrate.latest_version()
 # (the migration runner carries existing DBs forward to this version).
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9

@@ -84,6 +84,23 @@ enabled = false
 read_only = false          # true: serve read-only (omit the brain_capture write tool)
 recall_k = 8               # default top-k claims returned by brain_recall
 
+[retrieval]
+# Which retrieval backend serves recall (LEDGER_SPEC.md §8). The backend returns
+# *candidates* — ids and scores. WikiBrain then re-reads status, scope and
+# confidence from the ledger and applies the trust filter, so a backend can
+# degrade recall quality but can never widen trust.
+#
+# Only `sqlite_fts` ships today (FTS5 + optional local-embedding hybrid via the
+# [semantic] extra). `graphiti`, `cognee`, `qdrant`, `chroma` and `llamaindex`
+# are the planned adapters — naming one now fails loudly rather than silently
+# falling back and quietly changing what recall means.
+backend = "sqlite_fts"
+profile = "manager_brief"  # default recall profile (see LEDGER_SPEC.md §7)
+max_items = 8              # default bound on a RecallPack
+# Candidates to fetch per requested item. Trust/scope filtering runs AFTER
+# retrieval, so the backend must over-fetch or a bounded pack comes back short.
+overfetch = 4
+
 [librarian]
 # The librarian is the model-BEARING half — the `wiki-librarian` console script,
 # a SEPARATE process from `wiki` (which still makes zero model calls). It performs

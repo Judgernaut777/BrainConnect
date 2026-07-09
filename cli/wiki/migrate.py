@@ -67,6 +67,83 @@ MIGRATIONS: dict[int, list[str]] = {
     8: [  # librarian adjudicate proposals for open escalations (advisory)
         "ALTER TABLE escalations ADD COLUMN proposal TEXT",
     ],
+    9: [  # the trusted memory ledger (LEDGER_SPEC.md §5)
+        # Candidates first: claims.candidate_id references this table. A
+        # REFERENCES column added by ALTER TABLE must default to NULL, which it
+        # does, but the target table should exist before the DML that uses it.
+        "CREATE TABLE memory_candidates ("
+        " id INTEGER PRIMARY KEY, text TEXT NOT NULL,"
+        " proposed_by TEXT NOT NULL, proposed_by_type TEXT NOT NULL,"
+        " source_id INTEGER REFERENCES sources(id), source_ref TEXT, task_id TEXT,"
+        " proposed_scopes TEXT NOT NULL DEFAULT '[]', tags TEXT NOT NULL DEFAULT '[]',"
+        " created_at TEXT NOT NULL, reviewed_at TEXT,"
+        " status TEXT NOT NULL DEFAULT 'pending',"
+        " promoted_claim_id INTEGER REFERENCES claims(id),"
+        " review_reason TEXT, reviewed_by TEXT,"
+        " metadata TEXT NOT NULL DEFAULT '{}')",
+        "CREATE INDEX memory_candidates_status ON memory_candidates(status)",
+        # Scope, ordinal confidence, tags, validity, promotion provenance.
+        "ALTER TABLE claims ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'global'",
+        "ALTER TABLE claims ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE claims ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE claims ADD COLUMN confidence_label TEXT",
+        "ALTER TABLE claims ADD COLUMN valid_from TEXT",
+        "ALTER TABLE claims ADD COLUMN valid_until TEXT",
+        "ALTER TABLE claims ADD COLUMN learned_at TEXT",
+        "ALTER TABLE claims ADD COLUMN last_verified_at TEXT",
+        "ALTER TABLE claims ADD COLUMN promoted_by TEXT",
+        "ALTER TABLE claims ADD COLUMN candidate_id INTEGER REFERENCES memory_candidates(id)",
+        "CREATE INDEX claims_scope ON claims(scope_type, scope_id)",
+        # Existing claims are global-scoped: exactly today's recall behaviour.
+        # (The DEFAULT already did this for existing rows; the UPDATE is a
+        # belt-and-braces no-op that also documents the intent.)
+        "UPDATE claims SET scope_type='global', scope_id=''"
+        " WHERE scope_type IS NULL OR scope_type=''",
+        # Derive the ordinal label from the number the gate already compares on,
+        # so pre-ledger claims answer both questions. Thresholds mirror
+        # confidence.py: verified >= .95, high >= .85, medium >= .5, else low.
+        "UPDATE claims SET confidence_label = CASE"
+        "  WHEN confidence >= 0.95 THEN 'verified'"
+        "  WHEN confidence >= 0.85 THEN 'high'"
+        "  WHEN confidence >= 0.5  THEN 'medium'"
+        "  ELSE 'low' END"
+        " WHERE confidence_label IS NULL",
+        # Many-to-many provenance, seeded from the single source_id each claim
+        # already carries.
+        "CREATE TABLE claim_sources ("
+        " id INTEGER PRIMARY KEY,"
+        " claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,"
+        " source_id INTEGER NOT NULL REFERENCES sources(id),"
+        " evidence_type TEXT NOT NULL DEFAULT 'extracted',"
+        " quote_or_pointer TEXT, created_at TEXT NOT NULL,"
+        " UNIQUE(claim_id, source_id, evidence_type))",
+        "CREATE INDEX claim_sources_claim_id ON claim_sources(claim_id)",
+        "INSERT INTO claim_sources(claim_id, source_id, evidence_type, quote_or_pointer, created_at)"
+        " SELECT id, source_id, 'extracted', location, created_at FROM claims",
+        # Supersession edges, seeded from the denormalised pointer.
+        "CREATE TABLE supersessions ("
+        " id INTEGER PRIMARY KEY,"
+        " old_claim_id INTEGER NOT NULL REFERENCES claims(id),"
+        " new_claim_id INTEGER NOT NULL REFERENCES claims(id),"
+        " reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, created_by TEXT,"
+        " UNIQUE(old_claim_id, new_claim_id))",
+        "INSERT INTO supersessions(old_claim_id, new_claim_id, reason, created_at, created_by)"
+        " SELECT id, superseded_by, 'backfilled from claims.superseded_by',"
+        "        COALESCE(reviewed_at, created_at), NULL"
+        " FROM claims WHERE superseded_by IS NOT NULL",
+        # Contradiction resolution provenance.
+        "ALTER TABLE contradictions ADD COLUMN resolved_at TEXT",
+        "ALTER TABLE contradictions ADD COLUMN resolved_by TEXT",
+        # Retrieval-quality feedback.
+        "CREATE TABLE recall_feedback ("
+        " id INTEGER PRIMARY KEY,"
+        " claim_id INTEGER REFERENCES claims(id) ON DELETE CASCADE,"
+        " source_id INTEGER REFERENCES sources(id),"
+        " actor_id TEXT NOT NULL, actor_type TEXT NOT NULL,"
+        " feedback TEXT NOT NULL, note TEXT, task_id TEXT,"
+        " created_at TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}')",
+        "CREATE INDEX recall_feedback_claim_id ON recall_feedback(claim_id)",
+    ],
 }
 
 

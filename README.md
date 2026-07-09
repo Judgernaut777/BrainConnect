@@ -26,7 +26,7 @@ flowchart LR
     you(["you"]) -->|"promote / reject"| db
 ```
 
-Two rules make it trustworthy:
+Three rules make it trustworthy:
 
 - **Agents can only propose, never decide.** Everything captured — by an agent or
   by you — lands *pending*. It becomes trusted memory only when you promote it.
@@ -35,10 +35,55 @@ Two rules make it trustworthy:
   the wiki, searching — is plain, deterministic code with zero API calls. Only a
   separate **librarian** process uses a model, and only to read raw sources and
   *draft* candidate facts for you to review.
+- **Retrieval can never widen trust.** The search backend only nominates rows by
+  id; the ledger itself answers for status, scope and confidence. Swap in a vector
+  store or a graph index and the trust boundary does not move.
 
 Every fact traces back to its source, and wiki-brain flags when a new fact
 contradicts one you already trust. See **BUILD_SPEC.md** for the full design and
 **SCHEMA.md** for conventions.
+
+---
+
+## The trusted memory ledger
+
+wiki-brain is a **trusted memory ledger** with a **pluggable retrieval backend**:
+it owns trust and provenance, while the backend owns search sophistication. The
+full contract is in **[docs/LEDGER_SPEC.md](docs/LEDGER_SPEC.md)**.
+
+What that buys you:
+
+- **Scoped memory.** Every durable fact is scoped — `repo:my-app`,
+  `model:qwen2.5-coder-14b`, `manager:claude-code`, or `global`. A fact learned in
+  one repo never leaks into another repo's recall. Global facts stay visible
+  everywhere.
+- **Bounded, shaped recall.** A *profile* decides what a given consumer sees:
+  `manager_brief`, `worker_brief`, `reviewer_brief`, `implementation_constraints`,
+  `user_preferences`, `known_failures`, `model_performance`. Selection is pure
+  code — tags and confidence, not a model.
+- **Conservative defaults.** Recall returns promoted claims only, no pending, no
+  superseded, 8 items. Pending material comes back only when you ask, and is
+  labeled `trusted: false`.
+- **Provenance and supersession.** Each recalled claim carries its sources,
+  scope, confidence, validity, and what superseded it. Contradictions come back
+  as warnings, never as silent deletions.
+- **Retrieval feedback.** Agents report what was `useful`, `stale`, or `wrong`.
+  That is an observation, not a demotion — it queues the claim for *your* review.
+
+```bash
+wiki capture --origin claude-code --scope repo:my-app --tags decision \
+  "Refresh token validation stays in auth/session.py; middleware depends on it."
+wiki pending list                       # the review queue
+wiki promote candidate_1 --scope repo:my-app --confidence verified
+wiki recall --query "refresh token" --scope repo:my-app --profile manager_brief
+wiki claims show claim_1                # provenance, scope, validity, feedback
+wiki project obsidian                   # render the vault + wiki/ledger.md
+```
+
+Agents reach the same concepts over MCP: `brain_recall`, `brain_capture`,
+`brain_feedback`. The human-gated `brain_pending` / `brain_promote` /
+`brain_reject` exist only under `wiki mcp serve --review` — never point an agent
+at that.
 
 ---
 

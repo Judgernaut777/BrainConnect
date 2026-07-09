@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import subprocess
 import sys
@@ -13,6 +14,17 @@ from . import (ingest, search as searchmod, queue as queuemod, render as renderm
                review, fetch as fetchmod, drop as dropmod, extract as extractmod,
                embed as embedmod, skills as skillsmod, mcp_server as mcpmod,
                evidence as evidencemod, triage as triagemod)
+from . import (api as apimod, backends, candidates as candmod,
+               confidence as confmod, feedback as feedbackmod,
+               profiles as profilesmod, refs, scopes as scopesmod)
+
+# Ledger errors that are a user mistake at the terminal, not a bug: print the
+# message and exit non-zero rather than dumping a traceback.
+_LEDGER_ERRORS = (
+    candmod.CandidateError, feedbackmod.FeedbackError, scopesmod.ScopeError,
+    confmod.ConfidenceError, profilesmod.ProfileError, refs.RefError,
+    backends.BackendError, apimod.ApiError,
+)
 
 SCAFFOLD_DIRS = [
     "raw", "raw/assets", "inbox",
@@ -26,6 +38,14 @@ def _emit(obj, as_json: bool):
         print(json.dumps(obj, indent=2, ensure_ascii=False))
         return True
     return False
+
+
+def _whoami() -> str:
+    """Default reviewer for the human-gated levers: whoever is at the terminal."""
+    try:
+        return getpass.getuser()
+    except Exception:  # no passwd entry (containers); the flag is still accepted
+        return "human"
 
 
 def _spawn_librarian(cfg: Config, source_ids: list[int]):
@@ -127,12 +147,32 @@ def cmd_file_claims(args):
 
 
 def cmd_capture(args):
+    """Propose a memory. Files evidence + a PENDING candidate; never promotes."""
+    text = (args.text or " ".join(args.text_pos or [])).strip()
+    if not text:
+        sys.exit("error: nothing to capture (pass text positionally or with --text)")
     with Repo.open() as repo:
         try:
-            sid = ingest.capture(repo, args.origin, args.text)
-        except ingest.IngestError as e:
+            scope_list = [scopesmod.parse(s) for s in (args.scope or [])]
+            source_id = (refs.parse(args.source, refs.SOURCE)
+                         if args.source else None)
+            cid = candmod.create(
+                repo, text, proposed_by=(args.proposed_by or args.origin),
+                proposed_by_type=args.proposed_by_type, source_id=source_id,
+                source_ref=args.source_ref, task_id=args.task_id,
+                proposed_scopes=scope_list, tags=args.tags or [],
+                harness=args.origin)
+        except (ingest.IngestError, *_LEDGER_ERRORS) as e:
             sys.exit(f"error: {e}")
-        print(f"captured as source #{sid} (origin session/{args.origin})")
+        row = repo.one("SELECT source_id FROM memory_candidates WHERE id=?", (cid,))
+        sid = row["source_id"]
+        if _emit({"candidate_id": refs.candidate(cid), "source_id": sid,
+                  "status": "pending"}, args.json):
+            return
+        print(f"captured as {refs.candidate(cid)} (pending) "
+              f"backed by source #{sid}")
+        print("It is unvetted; a human must `wiki promote` it before it is "
+              "returned by trusted recall.")
     _spawn_librarian(Config.load(), [sid])
 
 
@@ -457,22 +497,189 @@ def cmd_gate(args):
 
 
 # --- review levers ----------------------------------------------------------
+def _split_refs(ids: list[str], action: str) -> tuple[list[int], list[int]]:
+    """Sort `wiki promote/reject` arguments into (claim ids, candidate ids).
+
+    A bare integer is a claim — the pre-ledger morning-gate path, unchanged. A
+    `candidate_N` ref takes the ledger path, which requires a scope and confidence.
+    Mixing them in one invocation is refused: they are different operations with
+    different arguments, and silently applying only one would be worse.
+    """
+    claims, cands = [], []
+    for raw in ids:
+        kind = refs.kind_of(raw)
+        if kind == refs.CANDIDATE:
+            cands.append(refs.parse(raw, refs.CANDIDATE))
+        elif kind is None and raw.isdigit():
+            claims.append(int(raw))
+        else:
+            sys.exit(f"error: cannot {action} {raw!r}: expected a claim id (e.g. 12) "
+                     f"or a candidate ref (e.g. candidate_12)")
+    if claims and cands:
+        sys.exit(f"error: {action} claims and candidates separately — they take "
+                 "different arguments")
+    return claims, cands
+
+
 def cmd_promote(args):
+    claims, cands = _split_refs(args.ids, "promote")
     with Repo.open() as repo:
-        review.promote(repo, args.ids)
-        print(f"promoted {len(args.ids)} claim(s)")
+        if cands:
+            if not args.scope or not args.confidence:
+                sys.exit("error: promoting a candidate requires --scope and "
+                         "--confidence (low|medium|high|verified)")
+            try:
+                scope = scopesmod.parse(args.scope)
+                for cid in cands:
+                    claim = apimod.promote(
+                        repo, refs.candidate(cid), reviewer=args.reviewer,
+                        confidence=args.confidence, scope=scope, note=args.note)
+                    print(f"{refs.candidate(cid)} -> {claim['id']} "
+                          f"({scope}, {args.confidence}) by {args.reviewer}")
+            except _LEDGER_ERRORS as e:
+                sys.exit(f"error: {e}")
+            return
+        review.promote(repo, claims)
+        print(f"promoted {len(claims)} claim(s)")
 
 
 def cmd_reject(args):
+    claims, cands = _split_refs(args.ids, "reject")
     with Repo.open() as repo:
-        review.reject(repo, args.ids)
-        print(f"rejected {len(args.ids)} claim(s)")
+        if cands:
+            if not args.reason:
+                sys.exit("error: rejecting a candidate requires --reason")
+            try:
+                for cid in cands:
+                    apimod.reject(repo, refs.candidate(cid), reviewer=args.reviewer,
+                                  reason=args.reason)
+                    print(f"rejected {refs.candidate(cid)}: {args.reason}")
+            except _LEDGER_ERRORS as e:
+                sys.exit(f"error: {e}")
+            return
+        review.reject(repo, claims)
+        print(f"rejected {len(claims)} claim(s)")
 
 
 def cmd_supersede(args):
     with Repo.open() as repo:
-        review.supersede(repo, args.old, args.by)
+        review.supersede(repo, args.old, args.by, reason=args.reason or "",
+                         reviewer=args.reviewer)
         print(f"#{args.old} superseded by #{args.by}")
+
+
+# --- ledger commands (LEDGER_SPEC.md §12) -----------------------------------
+def cmd_recall(args):
+    with Repo.open() as repo:
+        try:
+            pack = apimod.recall(repo, {
+                "query": args.query,
+                "profile": args.profile,
+                "scopes": args.scope or [],
+                "trusted_only": not args.untrusted,
+                "include_pending": args.include_pending,
+                "include_superseded": args.include_superseded,
+                "max_items": args.limit,
+            })
+        except _LEDGER_ERRORS as e:
+            sys.exit(f"error: {e}")
+    if _emit(pack.as_dict(), args.json):
+        return
+    print(f"[{pack.profile}] {len(pack.items)} item(s) via {pack.backend}"
+          f" ({pack.retrieval_mode})")
+    for it in pack.items:
+        scope = scopesmod.from_dict(it.scope)
+        flag = "" if it.trusted else "  ⚠ UNTRUSTED"
+        print(f"  {it.id} [{it.status}/{it.confidence}] ({scope}){flag}")
+        print(f"    {it.text}")
+        for s in it.sources:
+            print(f"    ← {s['id']} ({s['evidence_type']}, {s['origin']})")
+    for w in pack.warnings:
+        print(f"  ! {w}")
+
+
+def cmd_candidates(args):
+    with Repo.open() as repo:
+        if args.pcmd == "show":
+            try:
+                row = candmod.get(repo, refs.parse(args.id, refs.CANDIDATE))
+            except _LEDGER_ERRORS as e:
+                sys.exit(f"error: {e}")
+            if _emit(row, args.json):
+                return
+            for k in ("ref", "status", "text", "proposed_by", "proposed_by_type",
+                      "source_id", "source_ref", "task_id", "tags",
+                      "proposed_scopes", "created_at", "reviewed_at", "reviewed_by",
+                      "review_reason", "promoted_claim"):
+                if row.get(k) not in (None, "", [], {}):
+                    print(f"  {k:18s} {row[k]}")
+            return
+        rows = candmod.listing(repo, status=args.status, limit=args.limit)
+        if _emit(rows, args.json):
+            return
+        if not rows:
+            print(f"no {args.status or 'any'} candidates")
+            return
+        for r in rows:
+            scopes_txt = ", ".join(str(scopesmod.from_dict(s))
+                                   for s in r["proposed_scopes"]) or "—"
+            print(f"  {r['ref']} [{r['status']}] by {r['proposed_by']} "
+                  f"({r['proposed_by_type']}) scopes: {scopes_txt}")
+            print(f"    {r['text'][:110]}")
+
+
+def cmd_claims(args):
+    with Repo.open() as repo:
+        try:
+            if args.ccmd == "show":
+                detail = review.claim_detail(repo, refs.parse(args.id, refs.CLAIM))
+                if _emit(detail, args.json):
+                    return
+                for k, v in detail.items():
+                    if v not in (None, "", [], {}):
+                        print(f"  {k:20s} {v}")
+                return
+            if args.ccmd == "supersede":
+                old = refs.parse(args.old, refs.CLAIM)
+                new = refs.parse(args.new, refs.CLAIM)
+                apimod.supersede(repo, refs.claim(old), refs.claim(new),
+                                 reason=args.reason or "", reviewer=args.reviewer)
+                print(f"{refs.claim(old)} superseded by {refs.claim(new)}")
+        except _LEDGER_ERRORS as e:
+            sys.exit(f"error: {e}")
+
+
+def cmd_feedback(args):
+    with Repo.open() as repo:
+        try:
+            apimod.record_feedback(repo, {
+                "feedback": args.feedback, "actor_id": args.actor,
+                "actor_type": args.actor_type, "claim_id": args.id,
+                "note": args.note, "task_id": args.task_id})
+        except _LEDGER_ERRORS as e:
+            sys.exit(f"error: {e}")
+        print(f"recorded {args.feedback} on {args.id}")
+
+
+def cmd_project(args):
+    with Repo.open() as repo:
+        rep = rendermod.render(repo, all_pages=args.all)
+        if _emit(rep, args.json):
+            return
+        print(f"projected {len(rep['rendered'])} page(s) to the Obsidian vault; "
+              f"changed={rep['changed']}")
+
+
+def cmd_ledger_health(args):
+    with Repo.open() as repo:
+        h = apimod.health(repo)
+    if _emit(h, getattr(args, "json", False)):
+        return
+    print(f"{h['service']}: {h['role']} — schema v{h['schema_version']}")
+    print(f"  backend: {h['backend'].get('backend')} "
+          f"(ok={h['backend'].get('ok')}, {h['backend'].get('note', '')})")
+    for k, v in h["ledger"].items():
+        print(f"  {k:22s} {v}")
 
 
 def cmd_promote_summary(args):
@@ -673,18 +880,28 @@ def _dispatch_skill(repo, args):
 # --- mcp server (Phase 7) ---------------------------------------------------
 def cmd_mcp(args):
     # The --read-only flag forces it on; otherwise honor the [mcp] config default.
-    read_only = args.read_only or bool(Config.load().mcp_cfg("read_only"))
+    # --review must not inherit that default, or a config with read_only=true would
+    # turn a human review session into a mutually-exclusive-flags error.
+    review_mode = getattr(args, "review", False)
+    read_only = args.read_only or (
+        not review_mode and bool(Config.load().mcp_cfg("read_only")))
     contribute_only = getattr(args, "contribute_only", False)
-    if read_only and contribute_only:
-        sys.exit("error: --read-only and --contribute-only are mutually exclusive")
+    try:
+        mcpmod.check_modes(read_only=read_only, contribute_only=contribute_only,
+                           review=review_mode)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
     if args.mcmd == "serve":
         try:
-            mcpmod.serve(read_only=read_only, contribute_only=contribute_only)
+            mcpmod.serve(read_only=read_only, contribute_only=contribute_only,
+                         review=review_mode)
         except mcpmod.McpUnavailable as e:
             sys.exit(f"error: {e}")
     elif args.mcmd == "info":
         with Repo.open() as repo:
-            cfg = mcpmod.client_config(repo, read_only=read_only, contribute_only=contribute_only)
+            cfg = mcpmod.client_config(repo, read_only=read_only,
+                                       contribute_only=contribute_only,
+                                       review=review_mode)
         if _emit(cfg, getattr(args, "json", False)):
             return
         print("Add this to your MCP client config (e.g. Claude Desktop's "
@@ -713,7 +930,25 @@ def build_parser() -> argparse.ArgumentParser:
     sa.add_argument("--origin", default="clip"); sa.add_argument("--title")
     sa.set_defaults(func=cmd_add)
 
-    sp = sub.add_parser("pending"); addj(sp); sp.set_defaults(func=cmd_pending)
+    # `wiki pending` (bare) keeps its pre-ledger meaning: sources awaiting
+    # extraction. `pending list` / `pending show` are the ledger's candidate
+    # review queue (LEDGER_SPEC.md §12); `pending sources` names the old behaviour
+    # explicitly.
+    sp = sub.add_parser("pending", help="review queues: candidates, or sources "
+                                        "awaiting extraction")
+    addj(sp)
+    psub = sp.add_subparsers(dest="pcmd")
+    pls = psub.add_parser("list", help="memory candidates awaiting promotion")
+    pls.add_argument("--status", default="pending",
+                     choices=candmod.STATUSES + ("",))
+    pls.add_argument("--limit", type=int, default=50)
+    addj(pls); pls.set_defaults(func=cmd_candidates)
+    psh = psub.add_parser("show", help="one candidate in full")
+    psh.add_argument("id", help="candidate ref, e.g. candidate_12")
+    addj(psh); psh.set_defaults(func=cmd_candidates)
+    psr = psub.add_parser("sources", help="sources awaiting extraction (pre-ledger)")
+    addj(psr); psr.set_defaults(func=cmd_pending)
+    sp.set_defaults(func=cmd_pending)
 
     sdr = sub.add_parser("drop"); addj(sdr)
     sdr.add_argument("--no-move", action="store_true",
@@ -773,9 +1008,75 @@ def build_parser() -> argparse.ArgumentParser:
     qt = qsub.add_parser("attempt"); qt.add_argument("id", type=int)
     sq.set_defaults(func=cmd_queue)
 
-    sc = sub.add_parser("capture")
-    sc.add_argument("--origin", required=True); sc.add_argument("text")
+    sc = sub.add_parser("capture", help="propose a memory (files a PENDING candidate)")
+    sc.add_argument("--origin", required=True, help="capturing harness, e.g. claude-code")
+    sc.add_argument("text_pos", nargs="*", help="the memory text")
+    sc.add_argument("--text", help="the memory text (alternative to positional)")
+    sc.add_argument("--scope", action="append",
+                    help="proposed scope, repeatable, e.g. repo:my-app")
+    sc.add_argument("--tags", action="append",
+                    help="proposed tag, repeatable (decision, constraint, gotcha, …)")
+    sc.add_argument("--source", help="existing evidence source ref (source_7); "
+                                     "omit to file the text as its own source")
+    sc.add_argument("--source-ref", dest="source_ref",
+                    help="opaque external evidence pointer, e.g. an AgentConnect attempt id")
+    sc.add_argument("--task-id", dest="task_id", help="opaque task id (not owned here)")
+    sc.add_argument("--proposed-by", dest="proposed_by",
+                    help="actor proposing (defaults to --origin)")
+    sc.add_argument("--proposed-by-type", dest="proposed_by_type", default="agent",
+                    choices=candmod.PROPOSER_TYPES)
+    addj(sc)
     sc.set_defaults(func=cmd_capture)
+
+    # --- ledger surface (LEDGER_SPEC.md §12) ---
+    srec = sub.add_parser("recall", help="trusted, scoped, bounded context pack")
+    srec.add_argument("--query", required=True)
+    srec.add_argument("--scope", action="append",
+                      help="repeatable, e.g. repo:my-app; omit for global facts only")
+    srec.add_argument("--profile", choices=profilesmod.NAMES,
+                      default=profilesmod.DEFAULT)
+    srec.add_argument("--limit", type=int, help="max items (default from profile)")
+    srec.add_argument("--include-pending", dest="include_pending",
+                      action="store_true",
+                      help="also return UNVETTED pending claims (labeled untrusted)")
+    srec.add_argument("--include-superseded", dest="include_superseded",
+                      action="store_true")
+    srec.add_argument("--untrusted", action="store_true",
+                      help="also admit contradicted claims")
+    addj(srec); srec.set_defaults(func=cmd_recall)
+
+    scl = sub.add_parser("claims", help="inspect and supersede claims")
+    clsub = scl.add_subparsers(dest="ccmd", required=True)
+    clshow = clsub.add_parser("show", help="provenance, scope, validity, feedback")
+    clshow.add_argument("id", help="claim ref, e.g. claim_4 (or a bare id)")
+    addj(clshow)
+    clsup = clsub.add_parser("supersede", help="retire a claim in favour of another")
+    clsup.add_argument("old"); clsup.add_argument("new")
+    clsup.add_argument("--reason", help="why the old claim was retired")
+    clsup.add_argument("--reviewer", default=_whoami())
+    addj(clsup)
+    scl.set_defaults(func=cmd_claims)
+
+    sfb = sub.add_parser("feedback", help="report retrieval quality on a claim")
+    sfb.add_argument("id", help="claim ref, e.g. claim_4")
+    sfb.add_argument("--feedback", required=True, choices=feedbackmod.FEEDBACK_VALUES)
+    sfb.add_argument("--note")
+    sfb.add_argument("--actor", default=_whoami())
+    sfb.add_argument("--actor-type", dest="actor_type", default="human",
+                     choices=feedbackmod.ACTOR_TYPES)
+    sfb.add_argument("--task-id", dest="task_id")
+    sfb.set_defaults(func=cmd_feedback)
+
+    spj = sub.add_parser("project", help="render a projection out of the ledger")
+    pjsub = spj.add_subparsers(dest="jcmd", required=True)
+    pjo = pjsub.add_parser("obsidian", help="render the Obsidian vault + ledger page")
+    pjo.add_argument("--all", action="store_true", help="re-render every page")
+    addj(pjo)
+    spj.set_defaults(func=cmd_project)
+
+    slh = sub.add_parser("ledger-health",
+                         help="the §14 adapter health check (backend + ledger shape)")
+    addj(slh); slh.set_defaults(func=cmd_ledger_health)
 
     sub.add_parser("dump").set_defaults(func=cmd_dump)
 
@@ -826,12 +1127,33 @@ def build_parser() -> argparse.ArgumentParser:
     addj(strg)
     strg.set_defaults(func=cmd_triage)
 
-    spr = sub.add_parser("promote"); spr.add_argument("ids", type=int, nargs="+")
+    # promote is polymorphic: bare integers are claims (the morning-gate path),
+    # `candidate_N` refs take the ledger path and need a scope + confidence.
+    spr = sub.add_parser(
+        "promote", help="promote claim ids (12 13) or a candidate (candidate_12)")
+    spr.add_argument("ids", nargs="+",
+                     help="claim ids, or candidate refs like candidate_12")
+    spr.add_argument("--scope", help="claim scope, e.g. repo:my-app or global "
+                                     "(required for a candidate)")
+    spr.add_argument("--confidence", choices=confmod.LABELS,
+                     help="confidence label (required for a candidate)")
+    spr.add_argument("--reviewer", default=_whoami(),
+                     help="who is promoting (defaults to the current user)")
+    spr.add_argument("--note", help="note recorded on the promotion")
     spr.set_defaults(func=cmd_promote)
-    srj = sub.add_parser("reject"); srj.add_argument("ids", type=int, nargs="+")
+    srj = sub.add_parser(
+        "reject", help="reject claim ids (12 13) or a candidate (candidate_12)")
+    srj.add_argument("ids", nargs="+",
+                     help="claim ids, or candidate refs like candidate_12")
+    srj.add_argument("--reason", help="why (required for a candidate)")
+    srj.add_argument("--reviewer", default=_whoami())
     srj.set_defaults(func=cmd_reject)
+
     sup = sub.add_parser("supersede"); sup.add_argument("old", type=int)
-    sup.add_argument("--by", type=int, required=True); sup.set_defaults(func=cmd_supersede)
+    sup.add_argument("--by", type=int, required=True)
+    sup.add_argument("--reason", help="why the old claim was retired")
+    sup.add_argument("--reviewer", default=_whoami())
+    sup.set_defaults(func=cmd_supersede)
     sps = sub.add_parser("promote-summary"); sps.add_argument("source", type=int)
     sps.set_defaults(func=cmd_promote_summary)
 
@@ -895,11 +1217,16 @@ def build_parser() -> argparse.ArgumentParser:
                          help="disable the brain_capture write tool")
     mcserve.add_argument("--contribute-only", action="store_true",
                          help="expose ONLY brain_capture (write-only; no recall) — for an agent fleet")
+    mcserve.add_argument("--review", action="store_true",
+                         help="also expose the HUMAN-GATED brain_pending/promote/reject "
+                              "tools — never point an agent at this")
     mcinfo = mcsub.add_parser("info", help="print MCP client config snippet")
     mcinfo.add_argument("--contribute-only", action="store_true",
                         help="emit a config for a write-only (contribute-only) server")
     mcinfo.add_argument("--read-only", action="store_true",
                         help="emit a config for a read-only server")
+    mcinfo.add_argument("--review", action="store_true",
+                        help="emit a config for a human review server")
     addj(mcinfo)
     smc.set_defaults(func=cmd_mcp)
 

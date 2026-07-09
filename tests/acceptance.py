@@ -29,6 +29,10 @@ from wiki import (ingest, search as searchmod, queue as queuemod,            # n
                   review, gate as gatemod, gather, fetch as fetchmod,
                   migrate as migratemod, schema as schemamod, drop as dropmod,
                   skills as skillsmod, mcp_server as mcpmod, evidence as evidencemod)
+from wiki import (api as apimod, backends, candidates as candmod,            # noqa: E402
+                  confidence as confmod, feedback as feedbackmod,
+                  profiles as profilesmod, recall as recallmod, refs as refsmod,
+                  scopes as scopesmod)
 
 PASS, FAIL = 0, 0
 
@@ -45,6 +49,21 @@ def check(name, cond):
 
 def write(p: Path, text: str):
     p.write_text(text, encoding="utf-8")
+
+
+def _raises(exc, fn, *a, **kw) -> bool:
+    """True iff `fn` raised `exc`. Keeps the negative-path checks one-liners."""
+    try:
+        fn(*a, **kw)
+    except exc:
+        return True
+    return False
+
+
+def _render_to_string(repo, root: Path) -> str:
+    """Re-render every page and return the ledger's bytes — the determinism check."""
+    rendermod.render(repo, all_pages=True)
+    return (root / rendermod.LEDGER_PATH).read_text(encoding="utf-8")
 
 
 def make_repo(root: Path) -> Path:
@@ -96,8 +115,21 @@ def main():
         "CREATE TABLE escalations (id INTEGER PRIMARY KEY, "
         "source_id INTEGER NOT NULL REFERENCES sources(id), reason TEXT NOT NULL, "
         "status TEXT NOT NULL DEFAULT 'open');"
+        # contradictions has existed since v1 too; the v9 ledger migration adds
+        # resolved_at/resolved_by to it.
+        "CREATE TABLE contradictions (id INTEGER PRIMARY KEY, "
+        "claim_a INTEGER NOT NULL REFERENCES claims(id), "
+        "claim_b INTEGER NOT NULL REFERENCES claims(id), "
+        "status TEXT NOT NULL DEFAULT 'open', resolution TEXT);"
     )
     c.execute("INSERT INTO sources(hash, path, origin) VALUES ('h1','raw/x.md','clip')")
+    # Two pre-ledger claims, one superseding the other, so the v9 backfill has
+    # something real to carry forward.
+    c.execute("INSERT INTO claims(id, text, source_id, confidence, origin, status, "
+              "created_at) VALUES (1,'a durable fact',1,0.9,'clip','promoted','2026-01-01')")
+    c.execute("INSERT INTO claims(id, text, source_id, confidence, origin, status, "
+              "superseded_by, created_at) "
+              "VALUES (2,'an outdated fact',1,0.4,'clip','superseded',1,'2026-01-01')")
     c.execute("PRAGMA user_version=1")
     c.commit()
     migratemod.migrate(c)
@@ -118,6 +150,29 @@ def main():
     _idx = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     check("migrate v6 creates hot-path indexes",
           {"claims_status", "claims_source_id", "claim_entities_entity_id", "relations_dst"} <= _idx)
+
+    # --- v9: the trusted memory ledger ---
+    check("migrate v9 creates the ledger tables",
+          {"memory_candidates", "claim_sources", "supersessions", "recall_feedback"} <= _tbls)
+    _claim_cols = {row[1] for row in c.execute("PRAGMA table_info(claims)")}
+    check("migrate v9 adds scope/tags/confidence_label/promoted_by to claims",
+          {"scope_type", "scope_id", "tags", "confidence_label", "promoted_by",
+           "candidate_id", "valid_until", "learned_at"} <= _claim_cols)
+    _con_cols = {row[1] for row in c.execute("PRAGMA table_info(contradictions)")}
+    check("migrate v9 adds contradiction resolution provenance",
+          {"resolved_at", "resolved_by"} <= _con_cols)
+    # Existing claims become global-scoped: exactly the pre-ledger recall behaviour.
+    check("migrate v9 backfills existing claims to global scope",
+          c.execute("SELECT COUNT(*) FROM claims WHERE scope_type='global'").fetchone()[0] == 2)
+    # The ordinal label is derived from the number the gate already compares on.
+    check("migrate v9 derives confidence_label from confidence",
+          c.execute("SELECT confidence_label FROM claims WHERE id=1").fetchone()[0] == "high"
+          and c.execute("SELECT confidence_label FROM claims WHERE id=2").fetchone()[0] == "low")
+    check("migrate v9 backfills claim_sources from claims.source_id",
+          c.execute("SELECT COUNT(*) FROM claim_sources").fetchone()[0] == 2)
+    check("migrate v9 backfills supersessions from claims.superseded_by",
+          c.execute("SELECT old_claim_id, new_claim_id FROM supersessions").fetchone() == (2, 1))
+
     migratemod.migrate(c)  # idempotent re-run
     check("migrate is idempotent",
           c.execute("PRAGMA user_version").fetchone()[0] == ver)
@@ -960,27 +1015,79 @@ def main():
         check("hybrid returns a mode and a results list",
               hy.get("mode") in ("hybrid", "fts") and isinstance(hy["results"], list))
 
-        # recall: assembles a context pack split into promoted vs pending; the
+        # recall: a bounded, trust-filtered RecallPack (LEDGER_SPEC.md §6.1). The
         # server writes no prose (the note steers the client to synthesize).
         rec = mcpmod.tool_recall(r, term, k=5)
-        check("recall splits promoted vs pending", "promoted" in rec and "pending" in rec)
-        check("recall promoted bucket holds only promoted claims",
-              all(x.get("status") == "promoted" for x in rec["promoted"]))
+        check("recall returns a RecallPack shape",
+              {"backend", "profile", "query", "items", "warnings", "note"} <= set(rec))
+        check("recall is promoted-only by default",
+              all(x["status"] == "promoted" for x in rec["items"]))
+        check("recall items carry scope, confidence and validity",
+              all({"scope", "confidence", "validity", "trusted"} <= set(x)
+                  for x in rec["items"]))
+        check("recall names the backend that served it", rec["backend"] == "sqlite_fts")
         check("recall carries an untrusted-data / synthesize note",
-              "instructions" in rec["note"] and "pending" in rec["note"])
+              "instructions" in rec["note"] and "data" in rec["note"])
+        check("recall rejects an unknown profile with an error dict, not a raise",
+              "error" in mcpmod.tool_recall(r, term, profile="no-such-profile"))
 
-        # capture: the one write door routes through ingest.capture -> a NEW
-        # source with origin session/<harness>, never promoted.
+        # capture: the one write door files a PENDING candidate behind the human
+        # gate, backed by a NEW source with origin session/<harness>.
         before = r.one("SELECT COUNT(*) n FROM sources")["n"]
         cap = mcpmod.tool_capture(r, "Phase 7 MCP test finding.", harness="mcp")
         after = r.one("SELECT COUNT(*) n FROM sources")["n"]
         check("capture registers exactly one new source", after == before + 1)
+        check("capture returns a pending candidate ref",
+              cap["status"] == "pending" and cap["candidate_id"].startswith("candidate_"))
         srow = r.one("SELECT origin, status FROM sources WHERE id=?", (cap["source_id"],))
         check("captured source has origin session/mcp", srow["origin"] == "session/mcp")
         check("captured source is new (unvetted), not promoted", srow["status"] == "new")
         check("capture harness label is sanitized",
               mcpmod.tool_capture(r, "x", harness="../evil!")["origin"]
               .startswith("session/"))
+        # capture files an evidence source, so a duplicate content hash surfaces as
+        # an IngestError. It must come back as an error dict, never crash the tool.
+        _dup_text = "A capture that will be repeated verbatim."
+        mcpmod.tool_capture(r, _dup_text, harness="mcp")
+        check("a duplicate capture returns an error dict, not an exception",
+              "error" in mcpmod.tool_capture(r, _dup_text, harness="mcp"))
+
+        # feedback: an observation, never a state transition.
+        cid_for_fb = promoted[0]
+        fb = mcpmod.tool_feedback(r, "stale", "claude-code",
+                                  claim_id=refsmod.claim(cid_for_fb), note="moved")
+        check("feedback records against a claim", fb.get("recorded") is True)
+        check("feedback does not demote the claim it flags",
+              r.one("SELECT status FROM claims WHERE id=?", (cid_for_fb,))["status"]
+              == "promoted")
+        check("feedback rejects an unknown value with an error dict",
+              "error" in mcpmod.tool_feedback(r, "bogus", "a",
+                                              claim_id=refsmod.claim(cid_for_fb)))
+
+        # mode gating (LEDGER_SPEC.md §11): the promote/reject tools exist only in
+        # --review. The guard sits before the FastMCP import, so it holds here.
+        default_tools = mcpmod.mode_tools()
+        check("default MCP mode is agent-facing: recall/capture/feedback, no promote",
+              "brain_capture" in default_tools and "brain_feedback" in default_tools
+              and "brain_promote" not in default_tools
+              and "brain_reject" not in default_tools
+              and "brain_pending" not in default_tools)
+        check("--review adds the human-gated promote/reject/pending tools",
+              {"brain_pending", "brain_promote", "brain_reject"}
+              <= set(mcpmod.mode_tools(review=True)))
+        check("--read-only exposes no write tool",
+              not any(t in mcpmod.mode_tools(read_only=True)
+                      for t in ("brain_capture", "brain_feedback", "brain_promote")))
+        check("--contribute-only exposes only brain_capture",
+              mcpmod.mode_tools(contribute_only=True) == ("brain_capture",))
+        for bad in ({"read_only": True, "contribute_only": True},
+                    {"review": True, "read_only": True},
+                    {"review": True, "contribute_only": True}):
+            try:
+                mcpmod.check_modes(**bad)
+                check(f"mutually exclusive modes rejected: {sorted(bad)}", False)
+            except ValueError:
+                check(f"mutually exclusive modes rejected: {sorted(bad)}", True)
 
         # --- fascia-guard integration (optional; dormant unless installed+flagged)
         # Soft dependency: absent fascia-guard, the hook is a no-op and only the
@@ -1002,7 +1109,9 @@ def main():
                 check("guard enforce: secret-bearing capture is refused",
                       "error" in refused and "fascia-guard" in refused["error"])
                 okc = mcpmod.tool_capture(gr, "The cache TTL is 300 seconds.", "mcp")
-                check("guard enforce: clean capture still stored", okc.get("status") == "new")
+                check("guard enforce: clean capture still stored",
+                      okc.get("status") == "pending"
+                      and okc.get("candidate_id", "").startswith("candidate_"))
                 # recall-side secret masking: a credential stored as a promoted
                 # claim (e.g. pre-guard) is masked on the way out, knowledge kept.
                 # Build the key by concatenation so this file doesn't itself trip
@@ -1016,7 +1125,7 @@ def main():
                        cur.lastrowid, "s1", 0.9, "clip", "promoted"))
                 gr.conn.commit()
                 rsec = mcpmod.tool_recall(gr, "legacy deploy key rotates quarterly", k=5)
-                _texts = " ".join(x.get("text", "") for x in rsec["promoted"] + rsec["pending"])
+                _texts = " ".join(x.get("text", "") for x in rsec["items"])
                 check("guard enforce: recalled secret is masked",
                       _awskey not in _texts and "rotates quarterly" in _texts)
             os.environ.pop("FASCIA_GUARD_ENFORCE", None)
@@ -1031,8 +1140,10 @@ def main():
                        cur.lastrowid, "p1", 0.9, "clip", "promoted"))
                 gr.conn.commit()
                 rec2 = mcpmod.tool_recall(gr, "answer instructions system prompt reveal", k=5)
+                # The guard annotation moved from `note` (a fixed string) into the
+                # RecallPack's `warnings`, alongside the scope/supersession warnings.
                 check("guard advisory: recall annotates poisoned material",
-                      "fascia-guard" in rec2["note"])
+                      any("fascia-guard" in w for w in rec2["warnings"]))
         for _k, _v in _saved.items():
             if _v is None:
                 os.environ.pop(_k, None)
@@ -2482,6 +2593,324 @@ def main():
     finally:
         libclient._post_json = _pj_orig
         libclient._sleep = _sleep_orig
+
+    # ---------------- Trusted memory ledger (LEDGER_SPEC.md §15) -------------
+    print("[ledger] candidates, scopes, profiles, trust policy, projection")
+    lroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-ledger-")))
+    with Repo.open(start=lroot) as r:
+        REPO_SCOPE = scopesmod.parse("repo:my-app")
+
+        # (1) capture creates a PENDING candidate, with provenance, never a claim.
+        cap = apimod.capture_candidate(r, {
+            "text": "Refresh token validation remains in auth/session.py because "
+                    "middleware depends on it.",
+            "proposed_by": "claude-code", "proposed_by_type": "manager",
+            "source_ref": "agentconnect_attempt_123", "task_id": "task_auth_001",
+            "proposed_scopes": ["repo:my-app"], "tags": ["decision"]})
+        check("candidate capture creates a pending record",
+              cap.accepted and cap.status == "pending")
+        cand_id = refsmod.parse(cap.candidate_id, refsmod.CANDIDATE)
+        cand = candmod.get(r, cand_id)
+        check("capture never creates a claim",
+              r.one("SELECT COUNT(*) n FROM claims")["n"] == 0)
+        check("candidate stores the opaque external source_ref and task_id",
+              cand["source_ref"] == "agentconnect_attempt_123"
+              and cand["task_id"] == "task_auth_001")
+        check("candidate is backed by an evidence source (provenance never dangles)",
+              cand["source_id"] is not None)
+
+        # (2) an agent cannot promote its own memory — enforced in code, not just
+        # by which MCP tools happen to be exposed.
+        agent_promoted = True
+        try:
+            candmod.promote(r, cand_id, reviewer="claude-code", confidence="high",
+                            scope=REPO_SCOPE, reviewer_type="manager")
+        except candmod.CandidateError:
+            agent_promoted = False
+        check("agent capture cannot promote directly", not agent_promoted)
+        check("refused promotion left the candidate pending",
+              candmod.get(r, cand_id)["status"] == "pending")
+
+        # (3) a human promotes it into a scoped claim.
+        claim_id = candmod.promote(r, cand_id, reviewer="matthew",
+                                   confidence="verified", scope=REPO_SCOPE)
+        crow = r.one("SELECT * FROM claims WHERE id=?", (claim_id,))
+        check("human promote creates a promoted claim", crow["status"] == "promoted")
+        check("promoted claim carries scope, confidence label and promoter",
+              crow["scope_type"] == "repo" and crow["scope_id"] == "my-app"
+              and crow["confidence_label"] == "verified"
+              and crow["promoted_by"] == "matthew")
+        check("promotion links the claim back to its candidate",
+              crow["candidate_id"] == cand_id
+              and candmod.get(r, cand_id)["status"] == "promoted")
+        check("a promoted candidate is no longer reviewable",
+              _raises(candmod.CandidateError, candmod.reject, r, cand_id,
+                      reviewer="matthew", reason="too late"))
+
+        # (5) + (11) trusted recall returns it, with provenance and scope.
+        pack = apimod.recall(r, {"query": "refresh token validation",
+                                 "scopes": ["repo:my-app"]})
+        check("promoted claim appears in trusted recall", len(pack.items) == 1)
+        item = pack.items[0]
+        check("recall item carries its scope",
+              item.scope == {"scope_type": "repo", "scope_id": "my-app"})
+        check("source/provenance returned when requested",
+              item.sources and item.sources[0]["id"] == refsmod.source(cand["source_id"]))
+        nosrc = apimod.recall(r, {"query": "refresh token validation",
+                                  "scopes": ["repo:my-app"], "include_sources": False})
+        check("provenance omitted when not requested", not nosrc.items[0].sources)
+
+        # (9) scope filtering: a repo claim never leaks to another repo, and an
+        # unscoped recall sees only global facts.
+        other = apimod.recall(r, {"query": "refresh token validation",
+                                  "scopes": ["repo:other-app"]})
+        check("scope filtering hides a repo claim from another repo",
+              len(other.items) == 0)
+        check("out-of-scope drop is surfaced as a warning",
+              any("outside the requested scope" in w for w in other.warnings))
+        unscoped = apimod.recall(r, {"query": "refresh token validation"})
+        check("unscoped recall returns global facts only", len(unscoped.items) == 0)
+        gclaim = candmod.promote(
+            r, refsmod.parse(apimod.capture_candidate(r, {
+                "text": "The user prefers refresh token auth changes to go through "
+                        "the runbook.",
+                "proposed_by": "matthew", "proposed_by_type": "human",
+                "tags": ["preference"]}).candidate_id, refsmod.CANDIDATE),
+            reviewer="matthew", confidence="high", scope=scopesmod.GLOBAL)
+        gpack = apimod.recall(r, {"query": "refresh token"})
+        check("a global claim is visible from an unscoped recall",
+              any(i.id == refsmod.claim(gclaim) for i in gpack.items))
+        spack = apimod.recall(r, {"query": "refresh token", "scopes": ["repo:my-app"]})
+        check("a global claim is also visible from a scoped recall",
+              {i.id for i in spack.items}
+              == {refsmod.claim(gclaim), refsmod.claim(claim_id)})
+
+        # (7) + (8) pending claims are excluded unless explicitly requested.
+        r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, "
+             "created_at, scope_type, scope_id, confidence_label) "
+             "VALUES ('An unvetted refresh token guess.', ?, 0.9, 'session/mcp', "
+             "'pending', ?, 'repo', 'my-app', 'high')",
+             (cand["source_id"], "2026-01-01T00:00:00Z"))
+        r.finalize("test", "pending claim")
+        base = apimod.recall(r, {"query": "refresh token", "scopes": ["repo:my-app"]})
+        check("pending claim excluded from trusted recall by default",
+              all(i.status != "pending" for i in base.items))
+        withp = apimod.recall(r, {"query": "refresh token", "scopes": ["repo:my-app"],
+                                  "include_pending": True})
+        pend_items = [i for i in withp.items if i.status == "pending"]
+        check("pending included only when explicitly requested", len(pend_items) == 1)
+        check("included pending material is labeled untrusted",
+              pend_items[0].trusted is False)
+        check("including pending raises a warning",
+              any("PENDING" in w for w in withp.warnings))
+
+        # (4) a rejected candidate never reaches trusted recall.
+        rej = apimod.capture_candidate(r, {
+            "text": "Refresh token secrets should be logged for debugging.",
+            "proposed_by": "worker-3", "proposed_by_type": "worker",
+            "proposed_scopes": ["repo:my-app"]})
+        apimod.reject(r, rej.candidate_id, reviewer="matthew", reason="unsafe advice")
+        after_rej = apimod.recall(r, {"query": "refresh token secrets logged",
+                                      "scopes": ["repo:my-app"],
+                                      "include_pending": True})
+        check("rejected candidate does not appear in trusted recall",
+              not any("logged for debugging" in i.text for i in after_rej.items))
+        check("rejected candidate never became a claim",
+              r.one("SELECT COUNT(*) n FROM claims WHERE text LIKE '%logged for debugging%'")["n"] == 0)
+
+        # (6) superseded claims are hidden by default.
+        newer = candmod.promote(
+            r, refsmod.parse(apimod.capture_candidate(r, {
+                "text": "Refresh token validation moved to auth/tokens.py in v3.",
+                "proposed_by": "matthew", "proposed_by_type": "human",
+                "proposed_scopes": ["repo:my-app"], "tags": ["decision"]}).candidate_id,
+                refsmod.CANDIDATE),
+            reviewer="matthew", confidence="verified", scope=REPO_SCOPE)
+        apimod.supersede(r, refsmod.claim(claim_id), refsmod.claim(newer),
+                         reason="moved in the v3 refactor", reviewer="matthew")
+        sup = apimod.recall(r, {"query": "refresh token validation",
+                                "scopes": ["repo:my-app"]})
+        check("superseded claim excluded by default",
+              not any(i.id == refsmod.claim(claim_id) for i in sup.items))
+        check("superseded exclusion is surfaced as a warning",
+              any("superseded" in w for w in sup.warnings))
+        supin = apimod.recall(r, {"query": "refresh token validation",
+                                  "scopes": ["repo:my-app"],
+                                  "include_superseded": True})
+        old = [i for i in supin.items if i.id == refsmod.claim(claim_id)]
+        check("superseded claim returned when requested, pointing at its replacement",
+              old and old[0].superseded_by == refsmod.claim(newer))
+        check("supersession records the reason and the reviewer",
+              r.one("SELECT reason, created_by FROM supersessions WHERE old_claim_id=?",
+                    (claim_id,))["reason"] == "moved in the v3 refactor")
+        detail = review.claim_detail(r, claim_id)
+        check("claim detail exposes supersession provenance",
+              detail["superseded_by"] == refsmod.claim(newer))
+        check("a claim cannot supersede itself",
+              _raises(SystemExit, review.supersede, r, newer, newer))
+
+        # (10) profiles produce different bounded packs over the same query.
+        perf = candmod.promote(
+            r, refsmod.parse(apimod.capture_candidate(r, {
+                "text": "Qwen local worker reviews auth patches poorly.",
+                "proposed_by": "matthew", "proposed_by_type": "human",
+                "proposed_scopes": ["model:qwen2.5-coder-14b"],
+                "tags": ["model-performance"]}).candidate_id, refsmod.CANDIDATE),
+            reviewer="matthew", confidence="medium",
+            scope=scopesmod.parse("model:qwen2.5-coder-14b"))
+        # `search()` builds an AND query over the terms, so probe with the single
+        # word all three claims share; the profiles are what must differ, not the
+        # candidate set the backend hands back.
+        q = "auth"
+        allscopes = ["repo:my-app", "model:qwen2.5-coder-14b"]
+        by_profile = {
+            p: {i.id for i in apimod.recall(
+                r, {"query": q, "scopes": allscopes, "profile": p}).items}
+            for p in profilesmod.NAMES}
+        check("profile filtering: manager_brief sees the decision",
+              refsmod.claim(newer) in by_profile["manager_brief"])
+        check("profile filtering: model_performance sees only the model fact",
+              by_profile["model_performance"] == {refsmod.claim(perf)})
+        check("profile filtering: known_failures excludes the decision",
+              refsmod.claim(newer) not in by_profile["known_failures"])
+        check("profile filtering: user_preferences sees only the global preference",
+              by_profile["user_preferences"] == {refsmod.claim(gclaim)})
+        check("profile filtering: implementation_constraints keeps locked decisions",
+              refsmod.claim(newer) in by_profile["implementation_constraints"])
+        check("profiles produce different bounded context packs",
+              len({frozenset(v) for v in by_profile.values()}) > 1)
+        check("implementation_constraints requires high confidence",
+              profilesmod.get("implementation_constraints").min_confidence == confmod.HIGH)
+        check("an unknown profile is refused",
+              _raises(profilesmod.ProfileError, profilesmod.get, "nope"))
+        check("recall is bounded by max_items",
+              len(apimod.recall(r, {"query": q, "scopes": allscopes,
+                                    "max_items": 1}).items) == 1)
+
+        # (12) feedback records, and does NOT demote.
+        apimod.record_feedback(r, {"feedback": "stale", "actor_id": "claude-code",
+                                   "actor_type": "manager",
+                                   "claim_id": refsmod.claim(newer),
+                                   "note": "moved again", "task_id": "task_x"})
+        check("feedback records correctly",
+              feedbackmod.tally(r, newer) == {"stale": 1})
+        check("feedback never demotes the claim it flags",
+              r.one("SELECT status FROM claims WHERE id=?", (newer,))["status"] == "promoted")
+        check("negative feedback surfaces a human review queue",
+              any(x["id"] == newer for x in feedbackmod.pending_review(r)))
+        check("an unknown feedback value is refused",
+              _raises(feedbackmod.FeedbackError, feedbackmod.record, r,
+                      feedback="vibes", actor_id="a", actor_type="human",
+                      claim_id=newer))
+
+        # (14) the SQLite FTS backend returns candidates: ids and scores, no content.
+        backend = backends.get_backend(r)
+        check("sqlite_fts is the default backend", backend.backend_name == "sqlite_fts")
+        res = backend.search(backends.BackendSearchRequest(query="refresh token",
+                                                           limit=10))
+        check("SQLite FTS backend returns candidates", len(res.candidates) > 0)
+        check("backend candidates carry only an id, kind and score — never status",
+              all(isinstance(c, backends.BackendCandidate)
+                  and not hasattr(c, "status") for c in res.candidates))
+        check("backend health reports the index", backend.health()["ok"] is True)
+        check("an unknown backend fails loudly",
+              _raises(backends.BackendError, backends.get_backend, r, "not-a-backend"))
+        check("a planned-but-unbuilt backend says so",
+              _raises(backends.BackendError, backends.get_backend, r, "graphiti"))
+
+        # (15) backend results are filtered by WikiBrain's trust policy. A backend
+        # that nominates a rejected/pending/superseded claim cannot widen trust:
+        # recall re-reads status from the ledger and drops it.
+        rejected_claim = r.ex(
+            "INSERT INTO claims(text, source_id, confidence, origin, status, "
+            "created_at, scope_type, scope_id, confidence_label) VALUES "
+            "('A rejected refresh token claim.', ?, 0.99, 'clip', 'rejected', ?, "
+            "'repo', 'my-app', 'verified')",
+            (cand["source_id"], "2026-01-01T00:00:00Z")).lastrowid
+        r.finalize("test", "rejected claim")
+
+        class _LyingBackend:
+            """Nominates every claim, including rejected ones."""
+            backend_name = "lying"
+            def search(self, request):
+                rows = r.q("SELECT id FROM claims ORDER BY id")
+                return backends.BackendSearchResult(
+                    backend="lying", mode="test",
+                    candidates=[backends.BackendCandidate(kind="claim", id=x["id"],
+                                                          rank=i)
+                                for i, x in enumerate(rows)])
+            def index_source(self, source_id): pass
+            def index_claim(self, claim_id): pass
+            def delete_or_deindex(self, entity_id): pass
+            def health(self): return {"ok": True}
+
+        _real = backends.get_backend
+        try:
+            backends.get_backend = lambda repo, name=None: _LyingBackend()
+            recallmod.backends.get_backend = backends.get_backend
+            hostile = recallmod.recall(r, recallmod.RecallRequest(
+                query="anything", scopes=[REPO_SCOPE], max_items=50))
+        finally:
+            backends.get_backend = _real
+            recallmod.backends.get_backend = _real
+        got = {i.id for i in hostile.items}
+        check("backend results are filtered by WikiBrain trust policy",
+              refsmod.claim(rejected_claim) not in got)
+        check("trust policy also drops backend-nominated pending + superseded claims",
+              all(i.status == "promoted" for i in hostile.items))
+        check("a hostile backend cannot widen trust (every item still trusted)",
+              got and all(i.trusted for i in hostile.items))
+        check("rejected/archived claims are never recallable under any flag",
+              recallmod.NEVER_RECALLED == ("rejected", "archived"))
+
+        # (13) the Obsidian projection labels status, confidence and scope, and
+        # keeps the pending queue clearly separate from trusted knowledge.
+        rendermod.render(r, all_pages=True)
+        ledger = (lroot / rendermod.LEDGER_PATH).read_text(encoding="utf-8")
+        check("Obsidian projection renders a ledger page", "# Trusted memory ledger" in ledger)
+        check("projection labels scope on claim lines", "scope: repo:my-app" in ledger)
+        check("projection labels confidence on claim lines", "confidence: verified" in ledger)
+        check("projection sections the ledger by tag",
+              all(s in ledger for s in ("## Decisions", "## Constraints",
+                                        "## Known failures", "## Superseded facts",
+                                        "## Model/worker performance",
+                                        "## Pending candidates", "## Sources")))
+        check("projection shows superseded facts with their replacement",
+              f"superseded by `{refsmod.claim(newer)}`" in ledger)
+        check("projection surfaces the pending candidate queue as NOT trusted",
+              "Proposed, **not** trusted" in ledger)
+        check("projection never presents a rejected candidate as knowledge",
+              "unsafe advice" not in ledger and "logged for debugging" not in ledger)
+        check("projection cites sources for promoted claims", "## Sources (" in ledger)
+        again = _render_to_string(r, lroot)
+        check("ledger projection is byte-deterministic", again == ledger)
+
+        # (16) the §14 adapter contract AgentConnect binds to.
+        h = apimod.health(r)
+        check("health() reports ok, backend and ledger shape",
+              h["ok"] and h["backend"]["backend"] == "sqlite_fts"
+              and h["ledger"]["candidates_pending"] == 0
+              and h["ledger"]["claims_promoted"] >= 3)
+        check("health() advertises the recall profiles",
+              set(h["profiles"]) == set(profilesmod.NAMES))
+        check("the API refuses unknown request fields rather than ignoring them",
+              _raises(apimod.ApiError, apimod.recall, r,
+                      {"query": "x", "trusted_onlyy": False}))
+        check("scopes parse from strings, dicts and Scope objects",
+              apimod._scope_list(["repo:a", {"scope_type": "repo", "scope_id": "b"},
+                                  scopesmod.parse("repo:c")])
+              == [scopesmod.parse("repo:a"), scopesmod.parse("repo:b"),
+                  scopesmod.parse("repo:c")])
+        check("a scope type outside the closed vocabulary is refused",
+              _raises(scopesmod.ScopeError, scopesmod.parse, "kubernetes:prod"))
+        check("a non-global scope requires an id",
+              _raises(scopesmod.ScopeError, scopesmod.parse, "repo"))
+        check("claim and candidate refs cannot be confused",
+              _raises(refsmod.RefError, refsmod.parse, "candidate_1", refsmod.CLAIM))
+        check("confidence maps both ways consistently",
+              confmod.from_numeric(confmod.to_numeric("high")) == "high"
+              and confmod.at_least("verified", "medium")
+              and not confmod.at_least("low", "medium"))
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

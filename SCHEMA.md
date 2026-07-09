@@ -19,17 +19,74 @@ Stored on `sources.origin` and copied onto `claims.origin` at extraction time.
 - `sources.status`: `new` → `extracted` → (`failed` | `quarantined`). `new` =
   awaiting extraction (shows in `wiki pending`). `failed` = fetch failed
   (counts toward health). `quarantined` = manually distrusted.
-- `claims.status`: `pending` → (`promoted` | `rejected` | `superseded`).
-  Only `promoted` claims render on entity pages. `superseded` rows keep
-  `superseded_by` pointing at the replacement.
+- `claims.status`: `pending` → (`promoted` | `rejected` | `superseded` |
+  `contradicted` | `archived`). Only `promoted` claims render on entity pages.
+  `superseded` rows keep `superseded_by` pointing at the replacement.
+  `rejected` and `archived` claims are **never** recallable, under any flag
+  (`recall.NEVER_RECALLED`).
+- `memory_candidates.status`: `pending` → (`promoted` | `rejected` | `archived`).
+  Only `pending` is reviewable; a rejected candidate must be re-proposed, never
+  silently revived. Promotion writes a `claims` row and back-links it via
+  `promoted_claim_id` / `claims.candidate_id`. See LEDGER_SPEC.md §5.2.
 - `summaries.status`: `pending` → `promoted`. Source pages show the summary
   regardless of status; promotion is a curation signal.
-- `contradictions.status`: `open` → `resolved` (with `resolution`).
+- `contradictions.status`: `open` → (`resolved` | `false_positive`), with
+  `resolution` (the note), `resolved_at`, `resolved_by`. A contradiction is a
+  *warning*, never an automatic deletion: recall returns both sides and flags
+  them.
 - `research_queue.status`: `open` → (`done` | `parked`). Parked after 3 attempts.
 - `escalations.status`: `open` → `closed`.
 - `skills.status`: `draft` → `promoted`-equivalent `approved` → `archived`. Only
   `approved` skills render to `.claude/skills/`; `draft` skills live in the DB but
   never touch disk (the gate). `approve` is human-only (skills are instructions).
+
+## Ledger vocabularies (v9; see LEDGER_SPEC.md)
+
+**Scope** (`claims.scope_type` / `scope_id`, `wiki/scopes.py`):
+`global | user | project | repo | task | manager | worker | model | tool`.
+`global` is the only type with an empty `scope_id`. Rendered `repo:my-app`.
+Recall rule: a claim matches iff it is `global` **or** its `(type, id)` is among
+the scopes the caller asked for — so a repo claim never leaks into another repo's
+recall, while global facts stay visible everywhere. An unscoped recall therefore
+returns global facts only. Pre-ledger claims backfill to `global`.
+
+**Confidence** is stored twice, deliberately (`wiki/confidence.py` is the only
+place they are mapped, so they cannot drift):
+- `claims.confidence REAL` — what the auto-gate and the contradiction
+  pre-adjudicator compare numerically. Unchanged.
+- `claims.confidence_label` — the ordinal the ledger API speaks:
+  `low(0.3) | medium(0.6) | high(0.85) | verified(0.95)`. `high` sits exactly on
+  `gate.auto_promote_confidence`, so a human promoting at `high` and the auto-gate
+  agree. Derived from the number when absent.
+
+**Claim tags** (`claims.tags`, JSON array) are the classification substrate. They
+flow from `memory_candidates.tags` at promotion and drive *both* the recall
+profiles and the Obsidian ledger sections — keeping classification pure code, no
+model call. Recognised: `decision`, `constraint`, `known-failure`, `failure`,
+`gotcha`, `risk`, `criteria`, `interface`, `output-requirement`, `preference`,
+`model-performance`. Untagged promoted claims fall through to "Project facts" and
+still qualify for `manager_brief` (which imposes no tag filter).
+
+**Feedback** (`recall_feedback.feedback`):
+`useful | irrelevant | stale | wrong | too_broad | missing_context`. An
+observation, **never** a state transition — marking a claim `wrong` queues it for
+human review, it does not demote it. (Otherwise an agent could demote a rival
+claim by flagging it.)
+
+**Proposer vs reviewer types.** Anyone may propose (`memory_candidates
+.proposed_by_type ∈ human|manager|worker|librarian|agent|tool`). Only
+`human|librarian` may promote or reject — `candidates.promote()` raises on any
+other reviewer type, independent of which MCP tools a mode exposes.
+
+**Provenance.** `claims.source_id` stays NOT NULL and single (load-bearing for the
+renderer, the gate's corroboration count, and every pre-ledger query).
+`claim_sources` adds many-to-many evidence with
+`evidence_type ∈ extracted | quoted | derived | asserted` and a
+`quote_or_pointer`. A claim promoted from an agent's candidate records `asserted`
+— the agent asserted the text, a librarian did not extract it from the source.
+`memory_candidates.source_ref` and `.task_id` are **opaque** external pointers
+(e.g. `agentconnect_attempt_123`); WikiBrain stores and echoes them, never
+resolves them.
 
 ## Entity `kind`
 `person | org | tool | concept | event | place`. A claim's `entities` (and a
