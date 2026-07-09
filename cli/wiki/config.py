@@ -11,6 +11,10 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Overrides `[paths] db`. The isolation lever for tests, MCP verification, and any
+# throwaway script — because opening a repo migrates whatever DB it resolves to.
+DB_ENV_VAR = "WIKIBRAIN_DB"
+
 DEFAULTS = {
     "paths": {
         "db": "~/.wiki-brain/wiki.db",
@@ -130,7 +134,17 @@ class Config:
     # --- typed accessors ---
     @property
     def db_path(self) -> Path:
-        raw = self.data["paths"]["db"]
+        """Where the live database lives.
+
+        `WIKIBRAIN_DB` overrides `[paths] db` and takes precedence over everything.
+        It exists because `Repo.open()` runs forward migrations on EVERY open (see
+        docs/MIGRATIONS.md): a verification script that merely passes `root=` picks
+        the repo's config.toml and therefore still opens — and migrates — the
+        user's real `~/.wiki-brain/wiki.db`. Passing a temp root is NOT isolation.
+        Point this at a scratch file instead.
+        """
+        env = os.environ.get(DB_ENV_VAR, "").strip()
+        raw = env or self.data["paths"]["db"]
         return Path(os.path.expanduser(raw)).resolve()
 
     @property

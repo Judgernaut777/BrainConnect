@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli"))
 
 from wiki.db import Repo, init_db          # noqa: E402
+from wiki.config import Config             # noqa: E402
 from wiki.cli import build_parser          # noqa: E402
 from wiki import (ingest, search as searchmod, queue as queuemod,            # noqa: E402
                   render as rendermod, lint as lintmod, health as healthmod,
@@ -2911,6 +2912,46 @@ def main():
               confmod.from_numeric(confmod.to_numeric("high")) == "high"
               and confmod.at_least("verified", "medium")
               and not confmod.at_least("low", "medium"))
+
+    # ---------------- Live-DB isolation (docs/MIGRATIONS.md) ----------------
+    # Repo.open() migrates whatever DB it resolves to. These checks pin the two
+    # facts that matter: a temp `root=` does NOT isolate the database (the trap
+    # that migrated a live DB during MCP verification), and WIKIBRAIN_DB does.
+    print("[isolation] WIKIBRAIN_DB is the isolation lever; a temp root is not")
+    from wiki.config import DB_ENV_VAR
+    _saved_db = os.environ.pop(DB_ENV_VAR, None)
+    try:
+        iso = Path(tempfile.mkdtemp(prefix="wikibrain-iso-"))
+        decoy = iso / "decoy.db"          # stands in for ~/.wiki-brain/wiki.db
+        scratch = iso / "scratch.db"
+        (iso / "db").mkdir()
+        write(iso / "log.md", "# log\n")
+        # A repo whose config points at an absolute path OUTSIDE the repo root —
+        # exactly the real layout, and exactly why `root=` cannot isolate.
+        write(iso / "config.toml", f'[paths]\ndb = "{decoy.as_posix()}"\n')
+
+        cfg = Config.load(iso)
+        check("a temp repo root still resolves the config's absolute db path "
+              "(root= is NOT isolation)", cfg.db_path == decoy.resolve())
+
+        os.environ[DB_ENV_VAR] = str(scratch)
+        cfg2 = Config.load(iso)
+        check("WIKIBRAIN_DB overrides the config's db path", cfg2.db_path == scratch.resolve())
+        init_db(start=iso).close()
+        check("init_db under WIKIBRAIN_DB writes the scratch db, not the config's",
+              scratch.exists() and not decoy.exists())
+        with Repo.open(start=iso) as ir:
+            check("Repo.open under WIKIBRAIN_DB uses the scratch db",
+                  Path(ir.cfg.db_path) == scratch.resolve())
+            check("Repo.open stamps the scratch db at the current schema version",
+                  ir.one("PRAGMA user_version")[0] == schemamod.SCHEMA_VERSION)
+        check("the config's real db was never created (isolation held)",
+              not decoy.exists())
+    finally:
+        if _saved_db is None:
+            os.environ.pop(DB_ENV_VAR, None)
+        else:
+            os.environ[DB_ENV_VAR] = _saved_db
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

@@ -11,6 +11,11 @@
 # brain from scheduled tasks under a different OS account, pin this to an
 # absolute path instead (e.g. "D:/wiki-brain/wiki.db") so it can't drift when
 # `~` resolves differently across accounts.
+#
+# The `WIKIBRAIN_DB` env var overrides this. Use it to point tests, scripts and
+# MCP verification at a scratch database — opening a repo runs forward migrations
+# on the DB this resolves to, and a temp repo root does NOT isolate it.
+# See docs/MIGRATIONS.md.
 db = "~/.wiki-brain/wiki.db"
 
 # Browser bookmark files to sync (Chrome "Bookmarks" JSON or Firefox places.sqlite).

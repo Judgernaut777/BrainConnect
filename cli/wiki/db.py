@@ -24,6 +24,17 @@ class Repo:
     # --- lifecycle -----------------------------------------------------------
     @classmethod
     def open(cls, start: Path | None = None, *, must_exist: bool = True) -> "Repo":
+        """Open the repo's database, applying any pending forward migrations.
+
+        **This mutates real state.** Migrations run on EVERY open — including the
+        one `mcp_server.build_server()` performs. `start` selects which
+        `config.toml` is read; the database lives at an absolute path *inside* that
+        config (`[paths] db`, default `~/.wiki-brain/wiki.db`), so passing a temp
+        `start` is NOT isolation and will still migrate the user's live DB.
+
+        For tests, scripts and MCP verification, set `WIKIBRAIN_DB` to a scratch
+        path. See docs/MIGRATIONS.md.
+        """
         cfg = Config.load(start)
         if must_exist and not cfg.found:
             raise SystemExit(

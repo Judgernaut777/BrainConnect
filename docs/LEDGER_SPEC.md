@@ -85,6 +85,10 @@ Integer primary keys are retained throughout (they are load-bearing for FTS5
 string refs** — `claim_4`, `candidate_12`, `source_7` — which are what agents and
 the CLI accept and echo. `wiki.refs` converts both ways and accepts a bare integer.
 
+> **Migrations run on every `Repo.open()`**, including the one `build_server()`
+> performs. A temp `root=` does not isolate the database — set `WIKIBRAIN_DB`.
+> See [MIGRATIONS.md](MIGRATIONS.md).
+
 ### 5.1 Source — evidence, not fact
 
 `sources(id, hash, path, title, url, origin, fetched_at, ingested_at, status,

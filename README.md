@@ -43,6 +43,14 @@ Every fact traces back to its source, and wiki-brain flags when a new fact
 contradicts one you already trust. See **BUILD_SPEC.md** for the full design and
 **SCHEMA.md** for conventions.
 
+> **Hacking on wiki-brain?** Opening a repo runs forward schema migrations
+> automatically — on *every* `Repo.open()`, including the one the MCP server
+> performs at launch. Passing a temporary repo root does **not** isolate the
+> database, which lives at an absolute path from `config.toml`. Set
+> **`WIKIBRAIN_DB=/tmp/scratch.db`** in tests, scripts and MCP verification so they
+> cannot touch your live `~/.wiki-brain/wiki.db`. See
+> **[docs/MIGRATIONS.md](docs/MIGRATIONS.md)**.
+
 ---
 
 ## The trusted memory ledger
