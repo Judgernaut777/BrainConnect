@@ -5,8 +5,22 @@ and deliberately held still while [mcp-agentconnect](https://github.com/Judgerna
 runs its manual dogfood of the proprietary-agent loop. The memory contract must not
 move underneath that integration.
 
-Last verified: **2026-07-10**, commit **`7cd2fe0`**, `main` in sync with origin,
-working tree clean.
+Last verified: **2026-07-10**. `main` in sync with origin, working tree clean.
+
+Three commits matter, and they are deliberately not the same one. The code boundary
+and the documentation boundary moved apart the moment the freeze was written down —
+that is normal, and naming only the newest hash would hide which commit you actually
+need when auditing behaviour.
+
+| Checkpoint | Commit | What it is |
+|---|---|---|
+| **Trust behaviour** | **`b69e13c`** | The last commit that changed **code**. `trusted_only` began meaning trusted, disputed claims stopped leaking as trusted, recall started ranking. Audit behaviour against this. |
+| **Trust contract** | **`7cd2fe0`** | Docs-only. Pinned the contract in [LEDGER_SPEC.md §14.1](LEDGER_SPEC.md) and recorded the `wiki serve` gap in §14.2. Changed no behaviour. |
+| **Freeze marker** | **`c855af9`** | Docs-only. This document, plus the README's documentation map. The freeze begins here. |
+
+Everything published after `c855af9` is docs-only by policy (see *Change policy while
+frozen*, below), so the tip of `main` may sit above it without any code having moved.
+**`b69e13c` is the commit to diff against when asking "did the behaviour change?"**
 
 | | |
 |---|---|
