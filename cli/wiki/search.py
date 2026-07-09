@@ -9,8 +9,20 @@ from . import util
 
 
 def search(repo: Repo, terms: str, *, promoted_only: bool = False,
-           limit: int = 20) -> list[dict]:
-    q = util.fts_query(terms)
+           limit: int = 20, match_all: bool = True) -> list[dict]:
+    """FTS5 search over claims + summaries, bm25-ranked.
+
+    `match_all=True` (the default, and what `wiki search` wants) ANDs the terms:
+    high precision, the user typed exactly what they meant.
+
+    `match_all=False` ORs them: high recall, bm25 still ranks documents matching
+    more terms first. This is what **recall** needs. A caller assembling a context
+    pack passes a natural-language question — AgentConnect builds its query from a
+    task's title and goal — and an AND query over a whole sentence matches nothing,
+    silently returning an empty pack that looks like "the ledger knows nothing"
+    rather than "the query was too long".
+    """
+    q = util.fts_query(terms) if match_all else util.fts_or_query(terms)
     results: list[dict] = []
 
     claim_sql = """

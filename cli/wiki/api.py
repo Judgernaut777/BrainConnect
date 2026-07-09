@@ -100,10 +100,30 @@ def _as_recall_request(req) -> RecallRequest:
     return RecallRequest(**d)
 
 
+# LEDGER_SPEC.md §14: WikiBrain accepts the caller's vocabulary for who is
+# proposing. AgentConnect's MemoryAdapter speaks `origin_actor_*`; the ledger
+# speaks `proposed_by*`. They are the same field, so accept both rather than
+# making every caller translate.
+_CAPTURE_ALIASES = {
+    "origin_actor_id": "proposed_by",
+    "origin_actor_type": "proposed_by_type",
+}
+
+
 def _as_capture_request(req) -> CaptureRequest:
     if isinstance(req, CaptureRequest):
         return req
     d = dict(req or {})
+    for alias, canonical in _CAPTURE_ALIASES.items():
+        if alias in d:
+            value = d.pop(alias)
+            if d.get(canonical) not in (None, ""):
+                if value not in (None, "", d[canonical]):
+                    raise ApiError(
+                        f"conflicting capture fields {alias!r} and {canonical!r}")
+                continue
+            if value is not None:
+                d[canonical] = value
     d["proposed_scopes"] = _scope_list(d.get("proposed_scopes"))
     if isinstance(d.get("source_id"), str):
         d["source_id"] = refs.parse(d["source_id"], refs.SOURCE)
@@ -189,9 +209,24 @@ def pending(repo: Repo, limit: int = 50) -> list[dict]:
     return candidates.listing(repo, status="pending", limit=limit)
 
 
-def promote(repo: Repo, candidate_id, reviewer: str, confidence: str, scope,
+def promote(repo: Repo, candidate_id, reviewer: str, confidence: str, scope=None,
             reviewer_type: str = "human", note: str | None = None) -> dict:
+    """Promote a pending candidate. `scope` may be omitted when the candidate
+    proposed exactly one — the reviewer is then accepting the proposal as filed.
+
+    An ambiguous or absent proposal is an error, never a guess: silently promoting
+    a claim into the wrong scope is how a repo fact leaks into global recall.
+    Confidence is never guessed either — it is what the profiles filter on.
+    """
     cid = refs.parse(candidate_id, refs.CANDIDATE)
+    if scope is None:
+        proposed = scopesmod.loads(
+            candidates._require(repo, cid)["proposed_scopes"])
+        if len(proposed) != 1:
+            raise ApiError(
+                f"candidate {refs.candidate(cid)} proposed {len(proposed)} scopes; "
+                "pass an explicit scope to promote it")
+        scope = proposed[0]
     if isinstance(scope, str):
         scope = scopesmod.parse(scope)
     elif isinstance(scope, dict):

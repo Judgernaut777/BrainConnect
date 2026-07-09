@@ -2864,6 +2864,51 @@ def main():
         check("rejected/archived claims are never recallable under any flag",
               recallmod.NEVER_RECALLED == ("rejected", "archived"))
 
+        # Recall is RANKED retrieval: a sentence-length query must still retrieve.
+        # `wiki search` stays precise (AND). Regression for the cross-repo boundary
+        # bug where AgentConnect's ContextBuilder builds its query from a task's
+        # title + goal and WikiBrain silently returned an empty pack.
+        sentence = "refresh token validation design decisions for the auth module"
+        check("`wiki search` is precise: a sentence-length AND query matches nothing",
+              not [x for x in searchmod.search(r, sentence) if x["kind"] == "claim"])
+        check("search(match_all=False) retrieves for a sentence-length query",
+              any(x["kind"] == "claim"
+                  for x in searchmod.search(r, sentence, match_all=False)))
+        check("the sqlite_fts backend uses OR semantics for recall",
+              backends.SqliteFtsBackend.MATCH_ALL is False)
+        sent_pack = apimod.recall(r, {"query": sentence, "scopes": ["repo:my-app"]})
+        check("recall answers a natural-language question, not just keywords",
+              len(sent_pack.items) > 0)
+        check("bm25 still ranks the most on-topic claim first",
+              "refresh token" in sent_pack.items[0].text.lower())
+
+        # A PROMOTED claim in an OPEN contradiction: promoted and untrusted at the
+        # same time. This is the pair of fields the whole cross-repo trust boundary
+        # turns on — `status` alone would call it authoritative.
+        r.ex("INSERT INTO contradictions(claim_a, claim_b, status) VALUES (?,?,'open')",
+             (newer, perf))
+        r.finalize("test", "open contradiction")
+        disputed_pack = apimod.recall(r, {"query": "auth", "scopes": allscopes,
+                                          "trusted_only": False, "max_items": 20})
+        contested = [i for i in disputed_pack.items if i.contradicted]
+        check("a contradicted promoted claim is still returned (a warning, not a deletion)",
+              len(contested) >= 1)
+        d = contested[0].as_dict()
+        check("a contradicted promoted claim is promoted AND untrusted",
+              d["status"] == "promoted" and d["trusted"] is False)
+        # The AgentConnect boundary contract reads `contradiction_status`; it is
+        # derived from the same bool, so the two names cannot drift.
+        check("a contradicted item exposes contradiction_status='open'",
+              d["contradiction_status"] == "open" and d["contradicted"] is True)
+        check("recall warns that returned claims are disputed",
+              any("contradiction" in w.lower() for w in disputed_pack.warnings))
+        trusted_pack = apimod.recall(r, {"query": "auth", "scopes": allscopes,
+                                         "max_items": 20})
+        check("every item in a default (trusted_only) pack is trusted",
+              trusted_pack.items and all(i.trusted for i in trusted_pack.items))
+        check("no disputed claim reaches a trusted_only pack",
+              not any(i.contradicted for i in trusted_pack.items))
+
         # (13) the Obsidian projection labels status, confidence and scope, and
         # keeps the pending queue clearly separate from trusted knowledge.
         rendermod.render(r, all_pages=True)
@@ -2897,6 +2942,35 @@ def main():
         check("the API refuses unknown request fields rather than ignoring them",
               _raises(apimod.ApiError, apimod.recall, r,
                       {"query": "x", "trusted_onlyy": False}))
+        # §14 vocabulary: AgentConnect's MemoryAdapter speaks origin_actor_*.
+        alias_cap = apimod.capture_candidate(r, {
+            "text": "AgentConnect spoke origin_actor_id when capturing this.",
+            "origin_actor_id": "claude-code", "origin_actor_type": "manager",
+            "proposed_scopes": ["repo:my-app"]})
+        alias_row = candmod.get(r, refsmod.parse(alias_cap.candidate_id, refsmod.CANDIDATE))
+        check("capture accepts origin_actor_id/type as proposed_by/type (§14)",
+              alias_row["proposed_by"] == "claude-code"
+              and alias_row["proposed_by_type"] == "manager")
+        check("conflicting origin_actor_id and proposed_by is refused, not guessed",
+              _raises(apimod.ApiError, apimod.capture_candidate, r,
+                      {"text": "x", "origin_actor_id": "a", "proposed_by": "b"}))
+        # Promotion may inherit an unambiguous proposed scope, never guess one.
+        inherited = apimod.promote(r, alias_cap.candidate_id, reviewer="matthew",
+                                   confidence="high")
+        check("promote inherits the candidate's single proposed scope",
+              inherited["scope"] == "repo:my-app")
+        multi = apimod.capture_candidate(r, {
+            "text": "A candidate proposing two scopes.", "proposed_by": "claude-code",
+            "proposed_by_type": "manager",
+            "proposed_scopes": ["repo:my-app", "model:qwen2.5-coder-14b"]})
+        check("promote refuses to guess when the proposed scope is ambiguous",
+              _raises(apimod.ApiError, apimod.promote, r, multi.candidate_id,
+                      reviewer="matthew", confidence="high"))
+        check("promote still refuses an unknown confidence label",
+              _raises(confmod.ConfidenceError, apimod.promote, r, multi.candidate_id,
+                      reviewer="matthew", confidence="pretty-sure",
+                      scope="repo:my-app"))
+
         check("scopes parse from strings, dicts and Scope objects",
               apimod._scope_list(["repo:a", {"scope_type": "repo", "scope_id": "b"},
                                   scopesmod.parse("repo:c")])

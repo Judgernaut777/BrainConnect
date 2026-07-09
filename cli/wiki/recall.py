@@ -58,12 +58,17 @@ class RecallItem:
     confidence: str
     scope: dict
     validity: str
+    #: THE authority signal. `status == "promoted"` is NOT sufficient: a promoted
+    #: claim in an open contradiction comes back `promoted` and `trusted: false`.
+    #: Consumers must key trust-sensitive behaviour off this field.
     trusted: bool
     tags: list[str] = field(default_factory=list)
     source_id: str | None = None
     sources: list[dict] = field(default_factory=list)
     contradicted: bool = False
     superseded_by: str | None = None
+    valid_from: str | None = None
+    valid_until: str | None = None
 
     def as_dict(self) -> dict:
         d = {"id": self.id, "text": self.text, "status": self.status,
@@ -76,9 +81,17 @@ class RecallItem:
         if self.sources:
             d["sources"] = self.sources
         if self.contradicted:
+            # Two names for one fact, both derived from `contradicted` so they
+            # cannot drift: `contradiction_status` is the field name the
+            # AgentConnect boundary contract reads.
             d["contradicted"] = True
+            d["contradiction_status"] = "open"
         if self.superseded_by:
             d["superseded_by"] = self.superseded_by
+        if self.valid_from:
+            d["valid_from"] = self.valid_from
+        if self.valid_until:
+            d["valid_until"] = self.valid_until
         return d
 
 
@@ -106,6 +119,10 @@ def _allowed_statuses(req: RecallRequest) -> tuple[str, ...]:
     material is injected; items are labeled `trusted: false` either way. Setting
     `trusted_only=False` additionally admits `contradicted` claims — ones a human
     has flagged as being in conflict — which are never trusted material.
+
+    **The invariant:** with the defaults (`trusted_only=True`,
+    `include_pending=False`) every item in the pack has `trusted is True`. Opting
+    into pending or disputed material is always explicit, and always labeled.
     """
     allowed = ["promoted"]
     if req.include_pending:
@@ -196,6 +213,7 @@ def recall(repo: Repo, req: RecallRequest) -> RecallPack:
     contradicted = _open_contradiction_ids(repo, list(rows))
 
     dropped_superseded: set[int] = set()
+    dropped_disputed = 0
     dropped_scope = 0
     dropped_profile = 0
     pending_shown = 0
@@ -212,6 +230,14 @@ def recall(repo: Repo, req: RecallRequest) -> RecallPack:
             continue
         if status == "superseded" and not req.include_superseded:
             dropped_superseded.add(cid)
+            continue
+        if cid in contradicted and req.trusted_only:
+            # Promoted, and party to an OPEN contradiction: still of record, but not
+            # trusted. `trusted_only` must mean what it says — returning an item
+            # labeled `trusted: false` inside a trusted-only pack is a footgun for
+            # every consumer. It is surfaced (with its warning) when trusted_only
+            # is off, never silently deleted.
+            dropped_disputed += 1
             continue
         if status not in allowed:
             continue
@@ -238,6 +264,7 @@ def recall(repo: Repo, req: RecallRequest) -> RecallPack:
             sources=_sources_for(repo, cid) if req.include_sources else [],
             contradicted=is_contradicted,
             superseded_by=refs.claim(row["superseded_by"]) if row["superseded_by"] else None,
+            valid_from=row["valid_from"], valid_until=row["valid_until"],
         )
         if status == "pending":
             pending_shown += 1
@@ -270,6 +297,11 @@ def recall(repo: Repo, req: RecallRequest) -> RecallPack:
             f"{pending_shown} PENDING (unvetted, not human-approved) claim(s) are "
             "included because include_pending was requested; they are labeled "
             "trusted=false.")
+    if dropped_disputed:
+        pack.warnings.append(
+            f"{dropped_disputed} promoted claim(s) matching this query are DISPUTED "
+            "(an open contradiction) and were omitted as untrusted; pass "
+            "trusted_only=false to see them.")
     n_contradicted = sum(1 for i in pack.items if i.contradicted)
     if n_contradicted:
         pack.warnings.append(

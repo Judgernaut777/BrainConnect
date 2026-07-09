@@ -99,10 +99,14 @@ def semantic_search(repo: Repo, query: str, k: int = 10,
 
 
 def hybrid_search(repo: Repo, query: str, k: int = 10,
-                  *, promoted_only: bool = False) -> list[dict]:
-    """Reciprocal-rank-fusion of keyword (FTS) and semantic results."""
+                  *, promoted_only: bool = False, match_all: bool = True) -> list[dict]:
+    """Reciprocal-rank-fusion of keyword (FTS) and semantic results.
+
+    `match_all` is forwarded to the keyword half: recall passes False so a
+    sentence-length query still retrieves (see search.search)."""
     from . import search as searchmod
-    fts = [r for r in searchmod.search(repo, query, promoted_only=promoted_only)
+    fts = [r for r in searchmod.search(repo, query, promoted_only=promoted_only,
+                                       match_all=match_all)
            if r.get("kind") == "claim"]
     sem = semantic_search(repo, query, k=max(k * 2, 20), promoted_only=promoted_only)
     score: dict = {}

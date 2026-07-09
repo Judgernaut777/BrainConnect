@@ -78,10 +78,18 @@ class SqliteFtsBackend:
         return BackendSearchResult(backend=NAME, candidates=candidates,
                                    mode=mode, degraded=degraded)
 
+    # Recall is RANKED retrieval, not a precise lookup. A caller assembling a
+    # context pack asks a question ("refresh token expiry design decisions"), and
+    # ANDing every term matches nothing — an empty pack that reads as "the ledger
+    # knows nothing" when it means "your query was a sentence". OR + bm25 ranks
+    # claims matching more terms first, and the trust filter still runs after.
+    # `wiki search` keeps AND: there, the user typed exactly what they meant.
+    MATCH_ALL = False
+
     def _fts(self, request: BackendSearchRequest, promoted_only: bool) -> list[dict]:
         return [r for r in searchmod.search(
                     self.repo, request.query, promoted_only=promoted_only,
-                    limit=request.limit)
+                    limit=request.limit, match_all=self.MATCH_ALL)
                 if r.get("kind") == CLAIM]
 
     def _claims(self, request: BackendSearchRequest,
@@ -92,7 +100,8 @@ class SqliteFtsBackend:
                     "no embeddings indexed; keyword-only (run `wiki embed --all`)")
         try:
             rows = embedmod.hybrid_search(self.repo, request.query, k=request.limit,
-                                          promoted_only=promoted_only)
+                                          promoted_only=promoted_only,
+                                          match_all=self.MATCH_ALL)
             return rows, "hybrid", None
         except embedmod.EmbedError as e:
             return (self._fts(request, promoted_only), "fts",
