@@ -40,8 +40,17 @@ Three rules make it trustworthy:
   store or a graph index and the trust boundary does not move.
 
 Every fact traces back to its source, and wiki-brain flags when a new fact
-contradicts one you already trust. See **BUILD_SPEC.md** for the full design and
-**SCHEMA.md** for conventions.
+contradicts one you already trust.
+
+### Documentation
+
+| Document | Read it for |
+|---|---|
+| **[docs/STATUS.md](docs/STATUS.md)** | Where the project stands right now: schema version, gate count, the current freeze, and what may still change |
+| **[docs/LEDGER_SPEC.md](docs/LEDGER_SPEC.md)** | The design contract — trust, scopes, profiles, the backend seam, and the [trust rule (§14.1)](docs/LEDGER_SPEC.md) every consumer must obey |
+| **[docs/MIGRATIONS.md](docs/MIGRATIONS.md)** | Schema evolution, and the live-DB hazard: `Repo.open()` migrates, and a temp repo root is **not** isolation |
+| **BUILD_SPEC.md** | The origin design |
+| **SCHEMA.md** | Living conventions: vocabularies and state machines |
 
 > **Hacking on wiki-brain?** Opening a repo runs forward schema migrations
 > automatically — on *every* `Repo.open()`, including the one the MCP server
@@ -96,8 +105,18 @@ at that.
 **Trust rule for consumers:** `trusted: true` is the authority signal —
 `status: "promoted"` is not. A promoted claim in an open contradiction comes back
 `promoted` *and* untrusted. A missing `trusted` means untrusted; never infer it from
-`status`. (Reaching wiki-brain over HTTP needs a `wiki serve` that does not exist
-yet — see [docs/LEDGER_SPEC.md §14.2](docs/LEDGER_SPEC.md).)
+`status`. See [docs/LEDGER_SPEC.md §14.1](docs/LEDGER_SPEC.md).
+
+**Reaching wiki-brain over HTTP** needs a `wiki serve` that **does not exist yet**.
+AgentConnect's adapter expects a REST service at `:8787`; the cross-repo integration
+test stands in for it with an in-process transport into `wiki.api`. That test drives a
+real ledger, real promotion and the real trust filter — but no wire plumbing. So:
+
+> **A green integration suite means the semantics agree, not that the network path
+> exists.**
+
+`wiki serve` is a tracked, deferred follow-up — see
+[docs/LEDGER_SPEC.md §14.2](docs/LEDGER_SPEC.md) and [docs/STATUS.md](docs/STATUS.md).
 
 ---
 
