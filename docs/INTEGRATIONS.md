@@ -62,33 +62,32 @@ real adapter, ranker and `ContextBuilder` confirmed each of the following:
 Safety's effect on this contract is **purely additive** — no field changed meaning and
 none was removed. Full detail: [LEDGER_SPEC.md §14.2](LEDGER_SPEC.md).
 
-### Known gaps
+### AgentConnect adoption
 
-Neither is a trust or safety hole. Both are **observability** gaps, both live on the
-AgentConnect side of the seam, and neither warrants a change in BrainConnect.
+The observability gap this section recorded on 2026-07-10 — that AgentConnect's adapter
+dropped the additive safety fields — is **closed** as of `mcp-agentconnect@a07df7f`
+(2026-07-11). Re-checked here; nothing in BrainConnect changed to make it happen. The
+fields BrainConnect pins in [CONTRACT.md](CONTRACT.md) were adopted verbatim:
 
-1. **`CaptureResult` drops `safety` and `quarantined`.** BrainConnect returns both;
-   AgentConnect's `CaptureResult` has a `metadata` field but the adapter does not
-   populate it from them. A quarantined candidate is therefore structurally
-   indistinguishable from a clean pending one — the quarantine is announced only in
-   the human-readable `message`. The consequence is mild but real: a later
-   `promote_candidate` on that candidate raises rather than being pre-filtered, and an
-   operator view listing pending candidates cannot flag the dangerous ones.
-   *`list_pending` is unaffected: it returns raw candidate dicts, so `metadata.quarantined` and `metadata.safety` are visible there.*
+| BrainConnect emits | AgentConnect now consumes |
+|---|---|
+| `safety` on a recall item | read into `MemoryItem.safety` |
+| `safety` and `quarantined` on a capture result | read into `CaptureResult.safety` / `.quarantined` |
+| the promotion refusal (raised `SafetyRefused`) | mapped to a typed `MemorySafetyRefused`, distinct from an invalid request |
+| `safety_override` / `override_reason` on promote | forwarded, human-only, and only with a reason |
 
-2. **Recall items drop the `safety` block.** The adapter builds `MemoryItem` from an
-   enumerated set of keys and `safety` is not among them. A manager therefore sees `█`
-   runs in a claim with no per-item explanation of why. The pack-level warning does
-   pass through and does say so, but it points the reader at "each item's `safety`
-   field" — a field that, on the AgentConnect side, is not there.
+The field *names* AgentConnect sends and reads match BrainConnect's contract exactly:
+`safety_override`, `override_reason`, `quarantined`, `safety`. That the two repositories
+agreed without a shared type is the value of pinning the shapes — see
+[CONTRACT.md](CONTRACT.md), whose fixtures rebuild from live code on every gate run.
 
-Both are fixed by copying those keys into `MemoryItem.metadata` and
-`CaptureResult.metadata`. That is AgentConnect's change to make, not ours.
-
-What BrainConnect has done instead is make them impossible to miss: all three fields
-are now **pinned by contract fixtures** in `tests/contract/`, rebuilt from live code
-on every gate run, and documented field by field in [CONTRACT.md](CONTRACT.md). A
-consumer no longer has to read our source to discover they exist.
+**The refusal envelope is spec-level, not yet exercised.** BrainConnect's published
+envelope nests the code under `error` (`{"error": {"code": "safety_refused", …}}`);
+`brainconnect serve` does not exist, so no HTTP path on either side runs it today. The
+in-process seam the integration test drives raises `SafetyRefused` by type, not by
+envelope, so the transport shape is not what the 32/32 exercises. When `brainconnect
+serve` is built, both sides must agree on that one shape; the nested form in
+[CONTRACT.md](CONTRACT.md) is BrainConnect's side of that agreement.
 
 ### Transport
 

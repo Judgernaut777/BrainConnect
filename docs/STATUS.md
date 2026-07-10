@@ -143,9 +143,9 @@ that are not built, live in **[INTEGRATIONS.md](INTEGRATIONS.md)**.
 
 ## AgentConnect contract: verified
 
-Re-verified on **2026-07-10** against `mcp-agentconnect@9503661`, after safety landed.
-`tests/test_wikibrain_integration.py` passes, 32/32, and a direct probe of the three
-seams safety touches confirmed:
+Re-verified on **2026-07-11** against `mcp-agentconnect@a07df7f` (its committed tip).
+`tests/test_wikibrain_integration.py` passes, 32/32, and a direct probe of the seams
+safety touches confirmed:
 
 - a trusted claim carrying a raw credential crosses the boundary **trusted, with the
   credential masked**; the raw value never reaches AgentConnect, and the canonical
@@ -156,12 +156,19 @@ seams safety touches confirmed:
 - `health()` degrades correctly when a required safety engine cannot run.
 
 Trust semantics are unchanged: the ranker still places a promoted, uncontradicted
-claim at `WIKIBRAIN_PROMOTED`. Three additive fields BrainConnect emits are dropped by
-AgentConnect's mapper — `safety` on a recall item, and `safety` and `quarantined` on a
-capture result. That is an observability gap, not a trust or safety hole. All three are
-now **pinned by fixtures** so no future consumer can miss them: see
-[CONTRACT.md](CONTRACT.md), and [INTEGRATIONS.md](INTEGRATIONS.md#known-gaps) for the
-consequences of dropping them.
+claim at `WIKIBRAIN_PROMOTED`.
+
+**The observability gap recorded yesterday is closed.** The three additive fields
+BrainConnect emits — `safety` on a recall item, and `safety` and `quarantined` on a
+capture result — are now consumed by AgentConnect's adapter as of `a07df7f`, which also
+forwards `safety_override` / `override_reason` on promotion. The field names BrainConnect
+pinned in [CONTRACT.md](CONTRACT.md) were adopted verbatim. See
+[INTEGRATIONS.md](INTEGRATIONS.md#agentconnect-adoption).
+
+**No BrainConnect code change was needed this pass, and none was made.** The transport
+refusal envelope stays as published — nested under `error`, per [CONTRACT.md](CONTRACT.md).
+No running code on either side exercises it yet (`brainconnect serve` does not exist), so
+it remains a spec-level agreement until that server lands.
 
 ## Known gap: transport
 
