@@ -9,14 +9,7 @@
 
 > **Part of the [Fascia](https://github.com/Judgernaut777/Fascia-AI-OS) ecosystem** — the **memory** layer. Fascia connects this with the **control plane** ([mcp-agentconnect](https://github.com/Judgernaut777/mcp-agentconnect)), a multi-harness subagent fabric, and a shared **guard** ([fascia-guard](https://github.com/Judgernaut777/fascia-guard)) into one self-hosted, privacy-first agent stack.
 
-**Long-term memory for your AI agents — that you can read and edit like a wiki.**
-
-Your agents remember things by writing facts into wiki-brain and recalling them
-later. **You stay the editor:** nothing an agent writes becomes *trusted* memory
-until you approve it. It's one SQLite database (the single source of truth) that
-your agents reach over **MCP**, and that you browse and audit as a generated
-**Obsidian wiki**. It runs entirely on your own hardware — **no API keys, no
-cloud, no bill.**
+WikiBrain is a trusted memory ledger for agent systems. Agents can propose memory candidates, but trusted claims are human-gated, scoped, provenance-backed, and governed by promotion, rejection, contradiction, and supersession rules. It is designed to act as the authority layer for project memory while leaving task execution, routing, and workflow state to systems like AgentConnect.
 
 ```mermaid
 flowchart LR
