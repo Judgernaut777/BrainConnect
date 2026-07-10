@@ -82,8 +82,13 @@ AgentConnect side of the seam, and neither warrants a change in BrainConnect.
    pass through and does say so, but it points the reader at "each item's `safety`
    field" — a field that, on the AgentConnect side, is not there.
 
-Both are fixed by copying two keys into `MemoryItem.metadata` and `CaptureResult.metadata`.
-That is AgentConnect's change to make; this handoff explicitly forbids making it here.
+Both are fixed by copying those keys into `MemoryItem.metadata` and
+`CaptureResult.metadata`. That is AgentConnect's change to make, not ours.
+
+What BrainConnect has done instead is make them impossible to miss: all three fields
+are now **pinned by contract fixtures** in `tests/contract/`, rebuilt from live code
+on every gate run, and documented field by field in [CONTRACT.md](CONTRACT.md). A
+consumer no longer has to read our source to discover they exist.
 
 ### Transport
 
@@ -197,6 +202,11 @@ system. See [SAFETY.md](SAFETY.md).
 > promotion (a human sees it flagged) and at recall (high-risk content is withheld),
 > but not on the way in — so it sits in the `sources` table and in the `inbox/`
 > artifact, unmasked, where any other reader may find it.
+
+This is recorded as a **dependency of ToolConnect integration**, not as a reason to
+expand BrainConnect now. Nothing about the ledger today is unsafe for the way it is
+currently used; the surface becomes load-bearing when, and only when, something starts
+feeding it third-party documentation at volume. Build it then, against that need.
 
 Note the ordering that already protects the trusted set: a claim drafted from poisoned
 tool docs is a *candidate*. It is quarantined at capture if the payload survives into

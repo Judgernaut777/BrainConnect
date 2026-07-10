@@ -49,6 +49,25 @@ class CandidateError(Exception):
     pass
 
 
+class CandidateNotFound(CandidateError):
+    """No such candidate. Distinct from "you may not touch this one".
+
+    A subclass, so every existing `except CandidateError` still catches it and no
+    caller changes. It exists because a transport cannot map one exception type onto
+    two status codes, and 404 and 403 are not the same answer — see
+    `wiki.errors` and docs/CONTRACT.md.
+    """
+
+
+class ReviewerNotPermitted(CandidateError):
+    """The actor may not review. The human gate, refusing.
+
+    Raised when `reviewer_type` names an agent. Also a subclass, for the same
+    reason: an authorization refusal must be distinguishable from a malformed
+    request, or a consumer will retry something it may never do.
+    """
+
+
 class SafetyRefused(CandidateError):
     """Safety policy refused an operation. Carries the audit-safe result.
 
@@ -65,7 +84,7 @@ class SafetyRefused(CandidateError):
 def _require(repo: Repo, cid: int):
     row = repo.one("SELECT * FROM memory_candidates WHERE id = ?", (cid,))
     if not row:
-        raise CandidateError(f"no candidate {refs.candidate(cid)}")
+        raise CandidateNotFound(f"no candidate {refs.candidate(cid)}")
     return row
 
 
@@ -244,7 +263,7 @@ def promote(repo: Repo, cid: int, *, reviewer: str, confidence: str, scope: Scop
     recorded. There is no path by which a scanner makes a claim trusted.
     """
     if reviewer_type not in REVIEWER_TYPES:
-        raise CandidateError(
+        raise ReviewerNotPermitted(
             f"reviewer type {reviewer_type!r} may not promote; promotion is "
             f"human-gated (allowed: {', '.join(REVIEWER_TYPES)})")
     if not (reviewer or "").strip():
@@ -296,7 +315,7 @@ def promote(repo: Repo, cid: int, *, reviewer: str, confidence: str, scope: Scop
 def reject(repo: Repo, cid: int, *, reviewer: str, reason: str,
            reviewer_type: str = "human") -> None:
     if reviewer_type not in REVIEWER_TYPES:
-        raise CandidateError(
+        raise ReviewerNotPermitted(
             f"reviewer type {reviewer_type!r} may not reject; review is human-gated")
     if not (reason or "").strip():
         raise CandidateError("a rejection reason is required")

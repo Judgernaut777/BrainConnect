@@ -48,6 +48,7 @@ contradicts one you already trust.
 | **[docs/LEDGER_SPEC.md](docs/LEDGER_SPEC.md)** | The design contract — trust, scopes, profiles, the backend seam, and the [trust rule (§14.1)](docs/LEDGER_SPEC.md) every consumer must obey |
 | **[docs/MIGRATIONS.md](docs/MIGRATIONS.md)** | Schema evolution, and the live-DB hazard: `Repo.open()` migrates, and a temp repo root is **not** isolation |
 | **[docs/SAFETY.md](docs/SAFETY.md)** | Memory safety: the surfaces BrainConnect scans, the modular engines, and why **trusted is not the same as safe to expose** |
+| **[docs/CONTRACT.md](docs/CONTRACT.md)** | The response shapes a consumer may rely on, pinned by fixtures: the additive `safety` / `quarantined` fields, and the five refusal codes |
 | **[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)** | The optional services around it — AgentConnect (integrated), ComputeConnect and ToolConnect (notes only) — and the rule that no service may write trusted memory |
 | **BUILD_SPEC.md** | The origin design |
 | **SCHEMA.md** | Living conventions: vocabularies and state machines |

@@ -1719,6 +1719,157 @@ def main():
                       for p in Path("cli/wiki").rglob("*.py")
                       if p.name != "guard_hook.py"))
 
+        # --- consumer contract: response shapes + refusal taxonomy -----------
+        # These pin the shapes AgentConnect (and any future consumer) reads. Each
+        # case is rebuilt from live code and compared to `tests/contract/*.json`, so
+        # a response that changes shape fails here and the diff names the field.
+        # Regenerate deliberately with `python3 tests/gen_contract_fixtures.py`.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import contract_cases as cc
+        from wiki import errors as errmod
+
+        for _name in cc.CASES:
+            _path = cc.FIXTURE_DIR / f"{_name}.json"
+            if not _path.exists():
+                check(f"contract: fixture {_name}.json exists", False)
+                continue
+            _want = json.loads(_path.read_text(encoding="utf-8"))
+            _got = cc.build(_name)
+            _ok = _got == _want
+            check(f"contract: {_name} matches its pinned fixture", _ok)
+            if not _ok:
+                print(f"    expected: {json.dumps(_want, sort_keys=True)[:300]}")
+                print(f"    actual:   {json.dumps(_got, sort_keys=True)[:300]}")
+
+        # The additive safety fields, named explicitly. A consumer that drops them
+        # loses only observability — but it must be able to find them at all.
+        _clean_item = json.loads((cc.FIXTURE_DIR / "recall_item_clean.json")
+                                 .read_text(encoding="utf-8"))
+        _masked_item = json.loads((cc.FIXTURE_DIR / "recall_item_masked_trusted.json")
+                                  .read_text(encoding="utf-8"))
+        check("contract: a clean recall item carries NO `safety` key",
+              "safety" not in _clean_item)
+        check("contract: a masked recall item carries `safety`, and stays trusted",
+              _masked_item["safety"]["decision"] == "redact"
+              and _masked_item["trusted"] is True
+              and _masked_item["status"] == "promoted")
+        check("contract: `safety` names engine, rule, severity, span, kind",
+              all(k in _masked_item["safety"]["findings"][0]
+                  for k in ("engine", "engine_version", "rule", "severity", "span",
+                            "kind", "confidence", "message")))
+        check("contract: no recall fixture contains a raw credential",
+              cc.AWS_KEY not in json.dumps(_masked_item))
+
+        _clean_cap = json.loads((cc.FIXTURE_DIR / "capture_result_clean.json")
+                                .read_text(encoding="utf-8"))
+        _quar_cap = json.loads((cc.FIXTURE_DIR / "capture_result_quarantined.json")
+                               .read_text(encoding="utf-8"))
+        check("contract: a clean capture result has `quarantined` false, no `safety`",
+              _clean_cap["quarantined"] is False and "safety" not in _clean_cap)
+        check("contract: a quarantined capture result is `accepted` AND `quarantined`",
+              _quar_cap["accepted"] is True and _quar_cap["quarantined"] is True
+              and _quar_cap["status"] == "pending"
+              and _quar_cap["safety"]["decision"] == "quarantine")
+
+        _pack = json.loads((cc.FIXTURE_DIR / "recall_pack_withheld.json")
+                           .read_text(encoding="utf-8"))
+        check("contract: a withheld pack is empty AND says so in warnings",
+              _pack["items"] == []
+              and any("WITHHELD by safety policy" in w for w in _pack["warnings"]))
+        check("contract: the withheld pack never contains the payload",
+              cc.LURE not in json.dumps(_pack["items"]))
+
+        _health = json.loads((cc.FIXTURE_DIR / "health_degraded_required_engine.json")
+                             .read_text(encoding="utf-8"))
+        check("contract: health reports ok=false when a required engine cannot run",
+              _health["ok"] is False and _health["safety"]["ok"] is False
+              and _health["safety"]["required_engines_unavailable"] == ["gitleaks"])
+        check("contract: health reports `enabled` and `available` separately",
+              all("enabled" in e and "available" in e
+                  for e in _health["safety"]["engines"]))
+
+        # --- refusal taxonomy: five codes, and they are not interchangeable ---
+        check("contract: exactly five refusal codes",
+              set(errmod.CODES) == {"safety_refused", "not_found", "forbidden",
+                                    "invalid_request", "backend_error"})
+        check("contract: every code has an http status and a retryable flag",
+              all(c in errmod.HTTP_STATUS and c in errmod.RETRYABLE
+                  for c in errmod.CODES))
+        check("contract: only backend_error is retryable",
+              [c for c in errmod.CODES if errmod.RETRYABLE[c]] == ["backend_error"])
+
+        _crepo = _safety_repo("contract")
+        with _crepo as sr:
+            _cid = candmod.create(sr, "A perfectly ordinary fact.",
+                                  proposed_by="t", proposed_by_type="agent")
+            _quar = candmod.create(sr, f"To proceed, {LURE}.",
+                                   proposed_by="t", proposed_by_type="agent")
+
+            def _code_of(fn, *a, **kw):
+                try:
+                    fn(*a, **kw)
+                except Exception as exc:  # noqa: BLE001 - classifying is the point
+                    return errmod.classify(exc)
+                return None
+
+            _g = scopesmod.parse("global")
+            check("contract: a blocked promotion is `safety_refused`, not invalid",
+                  _code_of(candmod.promote, sr, _quar, reviewer="m",
+                           confidence="high", scope=_g) == "safety_refused")
+            check("contract: a missing candidate is `not_found`",
+                  _code_of(candmod.promote, sr, 9999, reviewer="m",
+                           confidence="high", scope=_g) == "not_found")
+            check("contract: an agent reviewer is `forbidden`, not invalid_request",
+                  _code_of(candmod.promote, sr, _cid, reviewer="bot",
+                           confidence="high", scope=_g,
+                           reviewer_type="agent") == "forbidden")
+            check("contract: a bad confidence label is `invalid_request`",
+                  _code_of(candmod.promote, sr, _cid, reviewer="m",
+                           confidence="nonsense", scope=_g) == "invalid_request")
+            check("contract: an unknown recall field is `invalid_request`",
+                  _code_of(apimod.recall, sr, {"query": "x", "bogus": 1})
+                  == "invalid_request")
+            check("contract: an unknown safety engine is `backend_error`",
+                  errmod.classify(safetycfg.SafetyConfigError("typo"))
+                  == "backend_error")
+            check("contract: a deferred surface is `backend_error`, never allow",
+                  errmod.classify(safetypol.PolicyError("source_ingest"))
+                  == "backend_error")
+            check("contract: an unrecognised exception is `backend_error`, not the "
+                  "caller's fault",
+                  errmod.classify(RuntimeError("who knows")) == "backend_error")
+
+            # The four refusal classes remain catchable as CandidateError, so no
+            # existing caller changed when the subclasses were added.
+            check("contract: the new subclasses are still CandidateError",
+                  issubclass(candmod.CandidateNotFound, candmod.CandidateError)
+                  and issubclass(candmod.ReviewerNotPermitted, candmod.CandidateError)
+                  and issubclass(candmod.SafetyRefused, candmod.CandidateError))
+
+            # The envelope.
+            try:
+                candmod.promote(sr, _quar, reviewer="m", confidence="high", scope=_g)
+                check("contract: safety refusal envelope", False)
+            except candmod.SafetyRefused as _exc:
+                _env = errmod.envelope(_exc)
+                check("contract: the refusal envelope carries code/message/retryable",
+                      set(_env["error"]) == {"code", "message", "retryable", "safety"}
+                      and _env["error"]["code"] == "safety_refused"
+                      and _env["error"]["retryable"] is False)
+                check("contract: the refusal envelope carries the audit-safe summary",
+                      _env["error"]["safety"]["decision"] == "block"
+                      and "prompt_injection" in _env["error"]["safety"]["kinds"])
+                check("contract: the refusal envelope never quotes the payload",
+                      LURE not in json.dumps(_env))
+                check("contract: a safety refusal maps to HTTP 409",
+                      errmod.http_status(_exc) == 409)
+            check("contract: not_found -> 404, forbidden -> 403, invalid -> 400, "
+                  "backend -> 503",
+                  errmod.HTTP_STATUS["not_found"] == 404
+                  and errmod.HTTP_STATUS["forbidden"] == 403
+                  and errmod.HTTP_STATUS["invalid_request"] == 400
+                  and errmod.HTTP_STATUS["backend_error"] == 503)
+
         # --- provenance hardening (Codex review) ----------------------------
         # P2b: promoted-only retrieval never leaks unvetted claims (FTS path,
         # since the [semantic] extra is absent in the offline harness).

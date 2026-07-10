@@ -21,7 +21,8 @@ Read "BrainConnect" as the product and "`wiki`" as the module it currently ships
 
 | Checkpoint | Commit | What it is |
 |---|---|---|
-| **Current tip** | **`b128e65`** | Memory safety: `cli/wiki/safety/`, enforced at capture, recall and promotion. The last commit that changed code. |
+| **Current tip** | **`600fea8`** | The consumer contract: fixtures in `tests/contract/`, and the refusal taxonomy in `cli/wiki/errors.py`. Additive only — no behaviour changed. |
+| **Behaviour tip** | **`b128e65`** | Memory safety: `cli/wiki/safety/`, enforced at capture, recall and promotion. **The last commit that changed enforced behaviour.** Diff against this when asking "did anything move?" |
 | **Trust behaviour** | **`b69e13c`** | `trusted_only` began meaning trusted; disputed claims stopped leaking as trusted. |
 | **Tag** | **`v0.1.0-mvp-control-loop`** | Annotated, at `f10569d`. The MVP control-loop checkpoint, taken before safety landed. |
 
@@ -32,11 +33,12 @@ AgentConnect's dogfood; the contract has since been extended, additively, by saf
 | | |
 |---|---|
 | Schema version | **9** (`schema.SCHEMA_VERSION == migrate.latest_version()`); unchanged by safety |
-| Gate | **518 checks pass, 0 failures** |
+| Gate | **552 checks pass, 0 failures** |
 | Retrieval backend | `sqlite_fts` (the only one implemented) |
 | Transport | in-process Python API + MCP stdio. **No HTTP server** |
 | Content safety | enforced at `memory_candidate`, `memory_recall`, `memory_promotion` |
 | Safety engines | `baseline` (built in, required) + 5 optional; `gliner` deferred |
+| Consumer contract | pinned by fixtures in `tests/contract/` — see [CONTRACT.md](CONTRACT.md) |
 
 Run the gate with:
 
@@ -154,10 +156,12 @@ seams safety touches confirmed:
 - `health()` degrades correctly when a required safety engine cannot run.
 
 Trust semantics are unchanged: the ranker still places a promoted, uncontradicted
-claim at `WIKIBRAIN_PROMOTED`. Two additive fields BrainConnect now emits are dropped
-by AgentConnect's mapper — an observability gap, not a trust or safety hole. Both are
-recorded in [INTEGRATIONS.md](INTEGRATIONS.md#known-gaps) and neither warrants a
-change here.
+claim at `WIKIBRAIN_PROMOTED`. Three additive fields BrainConnect emits are dropped by
+AgentConnect's mapper — `safety` on a recall item, and `safety` and `quarantined` on a
+capture result. That is an observability gap, not a trust or safety hole. All three are
+now **pinned by fixtures** so no future consumer can miss them: see
+[CONTRACT.md](CONTRACT.md), and [INTEGRATIONS.md](INTEGRATIONS.md#known-gaps) for the
+consequences of dropping them.
 
 ## Known gap: transport
 
@@ -185,8 +189,9 @@ so the semantic boundary and the transport surface cannot be confused for one an
 
 Ordered by how much each one blocks. Nothing here is started.
 
-1. **`wiki serve`** — the HTTP transport above. The only item another repository is
-   waiting on.
+1. **`brainconnect serve`** — the HTTP transport above. The only item another
+   repository is waiting on. Its refusal envelope and status codes are already
+   specified and tested; see [CONTRACT.md](CONTRACT.md#refusal-semantics).
 2. **`source_ingest` safety surface** — scan raw source documents on the way in, with
    the whole-file engines promotion already uses. This becomes load-bearing the moment
    anything ingests third-party text; see the ToolConnect notes.

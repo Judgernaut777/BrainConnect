@@ -1,0 +1,85 @@
+{
+  "backend": {
+    "backend": "sqlite_fts",
+    "embedded_claims": "<varies>",
+    "indexed_claims": "<varies>",
+    "note": "<varies>",
+    "ok": true,
+    "promoted_claims": "<varies>",
+    "semantic": "<varies>"
+  },
+  "ledger": {
+    "candidates_pending": 0,
+    "claims_pending": 0,
+    "claims_promoted": 0,
+    "claims_superseded": 0,
+    "contradictions_open": 0,
+    "feedback": 0,
+    "sources": 0
+  },
+  "ok": false,
+  "profiles": [
+    "manager_brief",
+    "worker_brief",
+    "reviewer_brief",
+    "implementation_constraints",
+    "user_preferences",
+    "known_failures",
+    "model_performance"
+  ],
+  "role": "trusted memory ledger",
+  "safety": {
+    "enabled": true,
+    "engines": [
+      {
+        "available": true,
+        "enabled": true,
+        "engine": "baseline",
+        "required": true,
+        "version": "1"
+      },
+      {
+        "available": null,
+        "enabled": false,
+        "engine": "detect_secrets",
+        "required": false
+      },
+      {
+        "available": null,
+        "enabled": false,
+        "engine": "trufflehog",
+        "required": false
+      },
+      {
+        "available": false,
+        "enabled": true,
+        "engine": "gitleaks",
+        "required": true,
+        "version": "cli"
+      },
+      {
+        "available": null,
+        "enabled": false,
+        "engine": "presidio",
+        "required": false
+      },
+      {
+        "available": null,
+        "enabled": false,
+        "engine": "prompt_guard",
+        "required": false
+      }
+    ],
+    "ok": false,
+    "required_engines_unavailable": [
+      "gitleaks"
+    ],
+    "surfaces": [
+      "memory_candidate",
+      "memory_recall",
+      "memory_promotion"
+    ]
+  },
+  "schema_version": "<int>",
+  "service": "wikibrain"
+}

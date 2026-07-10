@@ -1,0 +1,22 @@
+{
+  "confidence": "high",
+  "id": "claim_1",
+  "scope": {
+    "scope_id": "",
+    "scope_type": "global"
+  },
+  "source_id": "source_1",
+  "sources": [
+    {
+      "evidence_type": "extracted",
+      "id": "source_1",
+      "origin": "clip",
+      "quote_or_pointer": "s1",
+      "title": "Runbook"
+    }
+  ],
+  "status": "promoted",
+  "text": "The cache TTL is 300 seconds.",
+  "trusted": true,
+  "validity": "current"
+}

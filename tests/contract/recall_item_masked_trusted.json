@@ -1,0 +1,89 @@
+{
+  "confidence": "high",
+  "id": "claim_1",
+  "safety": {
+    "decision": "redact",
+    "engines": [
+      {
+        "engine": "baseline",
+        "findings": 1,
+        "required": true,
+        "status": "ok",
+        "version": "1"
+      },
+      {
+        "engine": "detect_secrets",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "trufflehog",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "gitleaks",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "presidio",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "prompt_guard",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      }
+    ],
+    "findings": [
+      {
+        "confidence": 1.0,
+        "engine": "baseline",
+        "engine_version": "1",
+        "kind": "secret",
+        "message": "content matches the aws_access_key credential shape",
+        "rule": "aws_access_key",
+        "severity": "critical",
+        "span": [
+          18,
+          38
+        ]
+      }
+    ],
+    "kinds": [
+      "secret"
+    ],
+    "redacted": true,
+    "surface": "memory_recall"
+  },
+  "scope": {
+    "scope_id": "",
+    "scope_type": "global"
+  },
+  "source_id": "source_1",
+  "sources": [
+    {
+      "evidence_type": "extracted",
+      "id": "source_1",
+      "origin": "clip",
+      "quote_or_pointer": "s1",
+      "title": "Runbook"
+    }
+  ],
+  "status": "promoted",
+  "text": "Legacy deploy key \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588 rotates quarterly.",
+  "trusted": true,
+  "validity": "current"
+}

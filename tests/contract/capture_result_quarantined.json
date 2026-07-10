@@ -1,0 +1,87 @@
+{
+  "accepted": true,
+  "candidate_id": "candidate_1",
+  "message": "Filed as a pending candidate. It is unvetted and will not appear in trusted recall until a human promotes it. It is QUARANTINED (prompt_injection (high, via baseline)) and cannot be promoted without an explicit human override.",
+  "quarantined": true,
+  "safety": {
+    "decision": "quarantine",
+    "engines": [
+      {
+        "engine": "baseline",
+        "findings": 2,
+        "required": true,
+        "status": "ok",
+        "version": "1"
+      },
+      {
+        "engine": "detect_secrets",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "trufflehog",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "gitleaks",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "presidio",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      },
+      {
+        "engine": "prompt_guard",
+        "findings": 0,
+        "required": false,
+        "status": "disabled",
+        "version": ""
+      }
+    ],
+    "findings": [
+      {
+        "confidence": 0.6,
+        "engine": "baseline",
+        "engine_version": "1",
+        "kind": "prompt_injection",
+        "message": "text resembles a prompt-injection lure (ignore_instructions)",
+        "rule": "ignore_instructions",
+        "severity": "high",
+        "span": [
+          12,
+          44
+        ]
+      },
+      {
+        "confidence": 0.6,
+        "engine": "baseline",
+        "engine_version": "1",
+        "kind": "prompt_injection",
+        "message": "text resembles a prompt-injection lure (system_prompt_probe)",
+        "rule": "system_prompt_probe",
+        "severity": "high",
+        "span": [
+          49,
+          73
+        ]
+      }
+    ],
+    "kinds": [
+      "prompt_injection"
+    ],
+    "redacted": false,
+    "surface": "memory_candidate"
+  },
+  "status": "pending"
+}
