@@ -13,7 +13,7 @@ nothing rather than everything.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import confidence as conf
 
