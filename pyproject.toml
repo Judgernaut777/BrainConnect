@@ -3,9 +3,13 @@ name = "brainconnect"
 version = "0.1.0"
 description = "BrainConnect: trusted memory ledger with a human promotion gate (pure-code CLI + HTTP service, no model calls)"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "trafilatura>=1.6",
+    # >=1.8 is a license floor, not a feature floor: trafilatura was GPLv3+
+    # through 1.7.x and relicensed to Apache-2.0 in 1.8.0 (verified against
+    # PyPI metadata). An Apache-2.0 program must not resolve a GPLv3 version.
+    "trafilatura>=1.8",
 ]
 
 # Optional extras — each is import-guarded in code so the core CLI runs without
@@ -42,7 +46,8 @@ brainconnect = "brainconnect.cli:main"
 brainconnect-librarian = "librarian.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 is the floor for PEP 639 SPDX `license` strings + `license-files`.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

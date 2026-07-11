@@ -144,6 +144,27 @@ a classifier that silently changes its weights changes what BrainConnect withhol
 The deterministic core CLI still makes **zero model calls**. `prompt_guard` is the
 only engine that runs one, it is local, and it is off by default.
 
+### Engine licensing
+
+BrainConnect is Apache-2.0. Two engine integrations deserve explicit license notes:
+
+* **TruffleHog is AGPL-3.0, and its integration is a documented exception** to the
+  earlier ecosystem decision that rejected TruffleHog on license grounds, **pending
+  user ratification**. The exception is scoped to exactly the boundary the code
+  already enforces: the engine is optional and **off by default**; TruffleHog is an
+  operator-installed external executable invoked **subprocess-only** — it is never
+  imported, never linked, never bundled, never shipped, and never a pip dependency;
+  and `--no-verification` is forced unless the operator explicitly sets
+  `allow_network_verification`. BrainConnect neither distributes nor modifies
+  TruffleHog, so running it at arm's length does not pull AGPL obligations into
+  this codebase. If the exception is not ratified, engine selection is by
+  capability and Gitleaks (MIT) or detect-secrets (Apache-2.0) substitutes freely.
+* **Operator-supplied classifier weights may carry gated licenses.** The
+  `prompt_guard` engine ships no model and has no default: it loads whatever the
+  operator names. Model-weight licenses are the operator's responsibility — in
+  particular, Meta's Llama Prompt Guard weights are distributed under the gated
+  Llama Community License, not an open-source license.
+
 ---
 
 ## The baseline is a floor, not a product
