@@ -3188,6 +3188,47 @@ def main():
               init_ok)
         check("wiki init created its DB under the fake HOME (never the real one)",
               (fake_home / ".wiki-brain" / "wiki.db").exists())
+
+        # A fresh init must leave behind a repo that later commands can FIND:
+        # every command locates the root by the nearest config.toml ancestor,
+        # so init writes a minimal one pointing at the DB it initialized.
+        check("init wrote a minimal config.toml in the fresh directory",
+              (freshdir / "config.toml").exists())
+        _fresh_cfg = Config.load(freshdir)
+        check("the written config points at the DB init created",
+              _fresh_cfg.found and _fresh_cfg.db_path
+              == (fake_home / ".wiki-brain" / "wiki.db").resolve())
+
+        # ... and the two commands a fresh install reaches for first both work
+        # in that directory, with no hand-written config: `health` (in-process,
+        # the same call the CLI makes) and `serve` (a REAL server over a socket).
+        with Repo.open(start=freshdir) as _fresh_repo:
+            _fresh_health = healthmod.compute(_fresh_repo)
+        check("health works right after init (no manual config.toml step)",
+              isinstance(_fresh_health, dict))
+        from brainconnect import server as _fsrvmod
+        import threading as _fthreading
+        import urllib.request as _furlrequest
+        _fsrv = _fsrvmod.build_server("127.0.0.1", 0, root=freshdir)
+        _fport = _fsrv.server_address[1]
+        _fthreading.Thread(target=_fsrv.serve_forever, daemon=True).start()
+        try:
+            with _furlrequest.urlopen(
+                    f"http://127.0.0.1:{_fport}/health", timeout=10) as _fresp:
+                _fwire = json.loads(_fresp.read().decode("utf-8"))
+        finally:
+            _fsrv.shutdown(); _fsrv.server_close()
+        check("serve works in the directory init just created (GET /health over "
+              "the wire)", _fwire.get("service") == "brainconnect")
+
+        # Re-running init in the same directory must never overwrite the config.
+        _cfg_before = (freshdir / "config.toml").read_text(encoding="utf-8")
+        (freshdir / "config.toml").write_text(
+            _cfg_before + "# user edit\n", encoding="utf-8")
+        _cmd_init(argparse.Namespace())
+        check("a second init leaves an existing config.toml untouched",
+              (freshdir / "config.toml").read_text(encoding="utf-8")
+              == _cfg_before + "# user edit\n")
     finally:
         os.chdir(prev_cwd)
         if prev_home is None:
@@ -3851,6 +3892,21 @@ def main():
     st, badlimit = _http("GET", "/candidates?limit=abc")
     check("a non-integer candidates limit is invalid_request",
           st == 400 and badlimit.get("error", {}).get("code") == "invalid_request")
+
+    # An unsupported HTTP method must wear the same envelope — never the
+    # stdlib's HTML 501 page (which would make json.loads above blow up).
+    st, unm = _http("DELETE", "/health")
+    check("an unsupported method (DELETE /health) is enveloped invalid_request",
+          st == 400 and unm.get("error", {}).get("code") == "invalid_request"
+          and unm["error"].get("retryable") is False
+          and "DELETE" in unm["error"].get("message", ""))
+    st, unm2 = _http("PUT", "/capture", {
+        "text": "smuggled", "origin_actor_id": "worker-7"})
+    check("an unsupported method with a body (PUT /capture) is enveloped too",
+          st == 400 and unm2.get("error", {}).get("code") == "invalid_request")
+    st, after = _http("GET", "/health")
+    check("the server still answers normally after refusing an unknown method",
+          st == 200 and after.get("service") == "brainconnect")
 
     # -- bearer-token mode ------------------------------------------------------
     httpd2 = srvmod.build_server("127.0.0.1", 0, token="sekrit-token", root=hroot)

@@ -173,7 +173,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":  # a HEAD response carries headers only
+            self.wfile.write(data)
 
     def _refuse(self, exc: BaseException) -> None:
         self._send(errors.http_status(exc), errors.envelope(exc))
@@ -231,6 +232,38 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # stderr, one line, no hostname lookups
         import sys
         sys.stderr.write(f"brainconnect serve: {fmt % args}\n")
+
+    def _method_not_allowed(self) -> None:
+        """Answer any HTTP method this server does not implement with the
+        canonical envelope — never the stdlib's HTML 501 page. `invalid_request`
+        is the honest code from the existing taxonomy: the caller must send a
+        different request (GET or POST), and retrying the same one is useless.
+        """
+        # Drain a body the client may have sent, so an HTTP/1.1 keep-alive
+        # connection stays parseable for the next request.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= MAX_BODY_BYTES:
+            self.rfile.read(length)
+        code = errors.INVALID_REQUEST
+        self._send(errors.HTTP_STATUS[code], {"error": {
+            "code": code,
+            "message": (f"unsupported method {self.command} for "
+                        f"{urlsplit(self.path).path}; this server speaks GET "
+                        "and POST only (docs/CONTRACT.md)"),
+            "retryable": errors.RETRYABLE[code],
+        }})
+
+    def __getattr__(self, name: str):
+        # http.server dispatches each request to `do_<METHOD>` and answers a
+        # missing one with its built-in HTML 501 page. Every verb we do not
+        # implement must wear the JSON envelope instead. (`__getattr__` fires
+        # only when normal lookup fails, so do_GET / do_POST are untouched.)
+        if name.startswith("do_"):
+            return self._method_not_allowed
+        raise AttributeError(name)
 
     # -- routes ----------------------------------------------------------------
     def do_GET(self):  # noqa: N802 — http.server API
