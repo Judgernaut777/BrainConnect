@@ -43,7 +43,7 @@ from . import ingest
 from . import profiles, refs
 from . import scopes as scopesmod
 
-SERVER_NAME = "wiki-brain"
+SERVER_NAME = "brainconnect"
 DEFAULT_HARNESS = "mcp"
 
 # Errors that are the caller's fault (a bad profile, scope, ref, confidence label)
@@ -228,7 +228,7 @@ def tool_feedback(repo: Repo, feedback: str, actor_id: str,
             "message": "Recorded. Negative feedback surfaces in the human review queue."}
 
 
-# --- human-gated review tools (only under `wiki mcp serve --review`) ---------
+# --- human-gated review tools (only under `brainconnect mcp serve --review`) ---------
 
 def tool_pending(repo: Repo, limit: int = 50) -> dict:
     """The human/librarian review queue: candidates awaiting promotion."""
@@ -264,7 +264,7 @@ def tool_health(repo: Repo) -> dict:
     return apimod.health(repo)
 
 
-# --- client config helper (for `wiki mcp info`) -----------------------------
+# --- client config helper (for `brainconnect mcp info`) -----------------------------
 
 def client_config(repo: Repo, *, read_only: bool = False,
                   contribute_only: bool = False, review: bool = False) -> dict:
@@ -279,7 +279,7 @@ def client_config(repo: Repo, *, read_only: bool = False,
     return {
         "mcpServers": {
             SERVER_NAME: {
-                "command": "wiki",
+                "command": "brainconnect",
                 "args": args,
                 "cwd": str(repo.root),
             }
@@ -305,7 +305,7 @@ def check_modes(*, read_only: bool = False, contribute_only: bool = False,
 def mode_tools(*, read_only: bool = False, contribute_only: bool = False,
                review: bool = False) -> tuple[str, ...]:
     """The tool names a given mode exposes (LEDGER_SPEC.md §11). The single source
-    of truth for both `build_server` and `wiki mcp info`."""
+    of truth for both `build_server` and `brainconnect mcp info`."""
     check_modes(read_only=read_only, contribute_only=contribute_only, review=review)
     if contribute_only:
         return ("brain_capture",)
@@ -318,7 +318,7 @@ def mode_tools(*, read_only: bool = False, contribute_only: bool = False,
     return agent_facing
 
 
-# --- the server (import-guarded; reached only by `wiki mcp serve`) ----------
+# --- the server (import-guarded; reached only by `brainconnect mcp serve`) ----------
 
 class McpUnavailable(Exception):
     pass

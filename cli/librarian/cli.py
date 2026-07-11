@@ -1,4 +1,4 @@
-"""`wiki-librarian` command-line entry point (the model-bearing half).
+"""`brainconnect-librarian` command-line entry point (the model-bearing half).
 
 Kept deliberately separate from the `wiki` console script: `wiki` stays pure
 code with zero model calls; this binary is the one that talks to a model.
@@ -10,7 +10,7 @@ import json
 import os
 import sys
 
-from wiki.db import Repo
+from brainconnect.db import Repo
 
 from . import adjudicate as adjudicatemod
 from . import client
@@ -94,8 +94,8 @@ def cmd_triage(args):
         for f in rep["failed"]:
             print(f"  ! claim #{f['claim_id']}: {f['error']}"
                   f"{_model_hint(f['error'], cfg.get('base_url'))}")
-        print("\nRecommendations are advisory — act with `wiki promote/reject` "
-              "(see `wiki triage`).")
+        print("\nRecommendations are advisory — act with `brainconnect promote/reject` "
+              "(see `brainconnect triage`).")
 
 
 def cmd_adjudicate(args):
@@ -117,7 +117,7 @@ def cmd_adjudicate(args):
             print(f"  ! {f['kind']} #{f['id']}: {f['error']}"
                   f"{_model_hint(f['error'], cfg.get('base_url'))}")
         print("\nProposals are advisory — resolve/supersede/close stay human gates "
-              "(`wiki contradiction resolve`, `wiki escalation close`).")
+              "(`brainconnect contradiction resolve`, `brainconnect escalation close`).")
 
 
 def cmd_synthesize(args):
@@ -150,7 +150,7 @@ def cmd_synthesize(args):
         print(f"{rep['pages_rendered']} page(s) rendered; "
               f"{len(rep['needs_synthesis_review'])} still need review.")
         print("\nSkill drafts stay status='draft' — APPROVAL is a human gate "
-              "(`wiki skill approve`); the librarian never approves or installs.")
+              "(`brainconnect skill approve`); the librarian never approves or installs.")
 
 
 def cmd_maintain(args):
@@ -190,10 +190,10 @@ def cmd_maintain(args):
         if rep["committed"]:
             print("  committed:   yes (git commit created)")
         print("\nWhat needs YOU (human gates — the librarian only drafts/proposes):")
-        print("  * review + promote/reject held claims:   wiki triage")
+        print("  * review + promote/reject held claims:   brainconnect triage")
         print("  * resolve contradictions / close escalations:   "
-              "wiki contradiction list, wiki escalation list")
-        print("  * approve skill drafts:   wiki skill list --status draft")
+              "brainconnect contradiction list, brainconnect escalation list")
+        print("  * approve skill drafts:   brainconnect skill list --status draft")
 
 
 def cmd_watch(args):
@@ -255,7 +255,7 @@ def cmd_status(args):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="wiki-librarian",
+        prog="brainconnect-librarian",
         description="wiki-brain librarian — event-driven model judgment "
                     "(the `wiki` CLI itself stays zero-model-call)")
     sub = p.add_subparsers(dest="cmd", required=True)

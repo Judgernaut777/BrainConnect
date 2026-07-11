@@ -2,8 +2,8 @@
 
 Internal ids stay INTEGER (load-bearing for FTS5 `content_rowid` and every foreign
 key). The API, MCP tools and CLI speak prefixed refs instead, which is what lets
-`wiki promote 12` (a claim, the pre-ledger morning-gate path) and
-`wiki promote candidate_12` (the ledger path) coexist unambiguously.
+`brainconnect promote 12` (a claim, the pre-ledger morning-gate path) and
+`brainconnect promote candidate_12` (the ledger path) coexist unambiguously.
 
 A bare integer is accepted everywhere a ref is, and means "of the expected kind".
 """

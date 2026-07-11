@@ -46,7 +46,7 @@ def _prompt_guard(**kw):
 
 
 #: name -> factory. Factories import lazily so that a heavy optional dependency is
-#: never imported by `import wiki`.
+#: never imported by `import brainconnect`.
 ENGINE_FACTORIES = {
     "baseline": _baseline,
     "detect_secrets": _detect_secrets,

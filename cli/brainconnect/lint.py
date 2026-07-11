@@ -1,4 +1,4 @@
-"""Phase 3 `wiki lint`: structural checks over DB + generated wiki.
+"""Phase 3 `brainconnect lint`: structural checks over DB + generated wiki.
 
 Each check yields machine-readable findings; question-shaped findings are
 auto-appended to research_queue (origin 'lint'). Pure code.
@@ -69,9 +69,9 @@ def _wiki_pages(repo: Repo) -> dict[str, str]:
 def lint(repo: Repo, *, queue: bool = True) -> dict:
     """Structural checks over the DB + generated wiki.
 
-    queue=True (the `wiki lint` default) appends question-shaped findings to
+    queue=True (the `brainconnect lint` default) appends question-shaped findings to
     research_queue. queue=False makes the pass strictly read-only — used by
-    `wiki health`, which must not have write side effects.
+    `brainconnect health`, which must not have write side effects.
     """
     findings: list[dict] = []
     pages = _wiki_pages(repo)

@@ -1,4 +1,4 @@
-"""`wiki drop`: ingest files from the configured ingestion folders.
+"""`brainconnect drop`: ingest files from the configured ingestion folders.
 
 Scans every `[[paths.sources]]` folder (plus the legacy single `drop_folder`),
 converts each file to a markdown `raw/` artifact via `extract.to_markdown`, and

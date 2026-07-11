@@ -17,8 +17,8 @@ from __future__ import annotations
 import json
 import re
 
-from wiki.db import Repo
-from wiki import review
+from brainconnect.db import Repo
+from brainconnect import review
 
 from . import client
 from .config import LibrarianConfig

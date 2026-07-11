@@ -26,15 +26,15 @@ from pathlib import Path
 # Make the package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli"))
 
-from wiki.db import Repo, init_db          # noqa: E402
-from wiki.config import Config             # noqa: E402
-from wiki.cli import build_parser          # noqa: E402
-from wiki import (ingest, search as searchmod, queue as queuemod,            # noqa: E402
+from brainconnect.db import Repo, init_db          # noqa: E402
+from brainconnect.config import Config             # noqa: E402
+from brainconnect.cli import build_parser          # noqa: E402
+from brainconnect import (ingest, search as searchmod, queue as queuemod,            # noqa: E402
                   render as rendermod, lint as lintmod, health as healthmod,
                   review, gate as gatemod, gather, fetch as fetchmod,
                   migrate as migratemod, schema as schemamod, drop as dropmod,
                   skills as skillsmod, mcp_server as mcpmod, evidence as evidencemod)
-from wiki import (api as apimod, backends, candidates as candmod,            # noqa: E402
+from brainconnect import (api as apimod, backends, candidates as candmod,            # noqa: E402
                   confidence as confmod, feedback as feedbackmod,
                   profiles as profilesmod, recall as recallmod, refs as refsmod,
                   scopes as scopesmod)
@@ -439,7 +439,7 @@ def main():
 
     # ---------------- Extract dispatch + image drop ----------------
     print("[extract] dispatch/guards + image asset handling")
-    from wiki import extract as extractmod
+    from brainconnect import extract as extractmod
     check("kind_for routes pdf->doc", extractmod.kind_for(Path("a.pdf")) == "doc")
     check("kind_for routes png->image", extractmod.kind_for(Path("a.png")) == "image")
     check("kind_for unknown->text", extractmod.kind_for(Path("a.zzz")) == "text")
@@ -529,7 +529,7 @@ def main():
     # ---------------- Semantic search ----------------
     print("[embed] semantic search (guard always; ranking if WIKI_TEST_SEMANTIC)")
     import os as _os
-    from wiki import embed as embedmod
+    from brainconnect import embed as embedmod
     etmp2 = Path(tempfile.mkdtemp(prefix="wikibrain-embed-"))
     eroot = make_repo(etmp2)
     _savedst = sys.modules.get("sentence_transformers")
@@ -1100,11 +1100,11 @@ def main():
         # third-party adapter is exercised through a fake. Real-tool tests are not
         # part of the gate, by design — a suite that needs TruffleHog installed is
         # a suite that gets skipped.
-        from wiki import safety as safetymod
-        from wiki.safety import (configuration as safetycfg, models as safetymodels,
+        from brainconnect import safety as safetymod
+        from brainconnect.safety import (configuration as safetycfg, models as safetymodels,
                                  pipeline as safetypipe, policies as safetypol,
                                  redaction as safetyredact, registry as safetyreg)
-        from wiki.safety.engines.base import (BaseEngine, EngineScanRequest,
+        from brainconnect.safety.engines.base import (BaseEngine, EngineScanRequest,
                                               ExternalToolEngine)
 
         D, RL, CAT = safetymodels.Decision, safetymodels.RiskLevel, safetymodels.Category
@@ -1307,7 +1307,7 @@ def main():
         # `The`, `is` and `seconds` as base64 high-entropy strings and masks a
         # sentence about cache expiry. The gate is pure, so it is tested here even
         # though the library is not installed in the gate environment.
-        from wiki.safety.engines import detect_secrets as _ds
+        from brainconnect.safety.engines import detect_secrets as _ds
         check("safety/detect_secrets: a named detector passes the gate",
               _ds.keep("AWS Access Key", AWSKEY)
               and _ds.severity_for("AWS Access Key") is RL.critical)
@@ -1351,7 +1351,7 @@ def main():
         # being pinned here is the baseline's own entropy floor, which exists so
         # that blocking on `changemechangeme` never trains anyone to switch
         # scanning off.
-        from wiki.safety.baseline import secrets as _bsecrets
+        from brainconnect.safety.baseline import secrets as _bsecrets
         check("safety: the baseline's entropy floor rejects a placeholder",
               _bsecrets.find('password = "changemechangeme"') == []
               and _bsecrets.find('api_key = "aZ39Qm7Xp2Lk8Rf4Tb6Wc1Yd5Ne0Hg"'))
@@ -1691,7 +1691,7 @@ def main():
                       for p in Path("cli/wiki/safety").rglob("*.py")))
 
         # --- the legacy fascia-guard seam is retired ---------------------------
-        from wiki import guard_hook
+        from brainconnect import guard_hook
         _saved = {k: os.environ.pop(k, None)
                   for k in ("FASCIA_GUARD", "FASCIA_GUARD_ENFORCE")}
         check("legacy guard: the fascia-guard seam is inert regardless of install",
@@ -1726,7 +1726,7 @@ def main():
         # Regenerate deliberately with `python3 tests/gen_contract_fixtures.py`.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import contract_cases as cc
-        from wiki import errors as errmod
+        from brainconnect import errors as errmod
 
         for _name in cc.CASES:
             _path = cc.FIXTURE_DIR / f"{_name}.json"
@@ -1936,9 +1936,9 @@ def main():
 
         # client config snippet is well-formed and points at the repo root
         cc = mcpmod.client_config(r, read_only=True)
-        srv = cc["mcpServers"]["wiki-brain"]
-        check("client config targets `wiki mcp serve`",
-              srv["command"] == "wiki" and srv["args"][:2] == ["mcp", "serve"])
+        srv = cc["mcpServers"]["brainconnect"]
+        check("client config targets `brainconnect mcp serve`",
+              srv["command"] == "brainconnect" and srv["args"][:2] == ["mcp", "serve"])
         check("read-only client config carries --read-only",
               "--read-only" in srv["args"])
 
@@ -1946,7 +1946,7 @@ def main():
         # exposed, no recall path). Config snippet carries the flag; the flag is
         # mutually exclusive with --read-only.
         ccw = mcpmod.client_config(r, contribute_only=True)
-        srvw = ccw["mcpServers"]["wiki-brain"]
+        srvw = ccw["mcpServers"]["brainconnect"]
         check("contribute-only client config carries --contribute-only",
               "--contribute-only" in srvw["args"])
         check("contribute-only client config omits --read-only",
@@ -2112,7 +2112,7 @@ def main():
     check("lint queue=False reports zero queued", lrep["queued"] == 0)
 
     # #4: negation heuristic no longer mis-fires on ordinary '*nt' words.
-    from wiki import util as _u
+    from brainconnect import util as _u
     check("'important' is not read as negation", not _u.has_negation("this is important"))
     check("'deployment' is not read as negation", not _u.has_negation("the deployment works"))
     check("'environment' is not read as negation", not _u.has_negation("the build environment"))
@@ -2122,7 +2122,7 @@ def main():
 
     # #6: evidence file --all skips 'failed' bookmark stubs (empty path) instead
     # of erroring on every one (they have no filable artifact).
-    from wiki import util as _u2
+    from brainconnect import util as _u2
     with Repo.open(start=fx) as r:
         ts = _u2.now_iso()
         r.ex("INSERT INTO sources(hash, path, title, url, origin, fetched_at, "
@@ -2289,7 +2289,7 @@ def main():
 
     # ---------------- Group A (#12): fail-closed gate / logged detectors ------
     print("[group-a #12] gate fails closed (not open) on FTS errors; ingest logs instead of swallowing")
-    from wiki.db import Repo as _RepoCls
+    from brainconnect.db import Repo as _RepoCls
     _orig_repo_q = _RepoCls.q
 
     def _boom_fts_q(self, sql, params=()):
@@ -2478,17 +2478,17 @@ def main():
 
     print("[group-d #13] POSIX parity — wrapper, docs, scheduling example")
     _repo_root = Path(__file__).resolve().parents[1]
-    wiki_sh = _repo_root / "wiki.sh"
-    check("POSIX wiki.sh wrapper exists at the repo root", wiki_sh.is_file())
-    check("wiki.sh is executable", wiki_sh.stat().st_mode & 0o111 != 0)
+    bc_sh = _repo_root / "brainconnect.sh"
+    check("POSIX brainconnect.sh wrapper exists at the repo root", bc_sh.is_file())
+    check("brainconnect.sh is executable", bc_sh.stat().st_mode & 0o111 != 0)
     check("no bare 'wiki' file at the repo root "
           "(it would collide with the generated wiki/ vault dir)",
           not (_repo_root / "wiki").exists())
-    wiki_sh_text = wiki_sh.read_text(encoding="utf-8")
-    check("wiki.sh resolves the repo venv console script when present",
-          ".venv/bin/wiki" in wiki_sh_text)
-    check("wiki.sh falls back to `python3 -m wiki`",
-          "python3 -m wiki" in wiki_sh_text)
+    bc_sh_text = bc_sh.read_text(encoding="utf-8")
+    check("brainconnect.sh resolves the repo venv console script when present",
+          ".venv/bin/brainconnect" in bc_sh_text)
+    check("brainconnect.sh falls back to `python3 -m brainconnect`",
+          "python3 -m brainconnect" in bc_sh_text)
 
     mech_sh = _repo_root / "scripts" / "mechanical-maintain.sh"
     check("POSIX mechanical-maintain.sh exists beside the .ps1", mech_sh.is_file())
@@ -2496,15 +2496,15 @@ def main():
 
     readme_text = (_repo_root / "README.md").read_text(encoding="utf-8")
     check("README documents a POSIX venv setup block",
-          "python3 -m venv .venv" in readme_text and "pip install -e ./cli" in readme_text)
+          "python3 -m venv .venv" in readme_text and "pip install -e ." in readme_text)
     check("README documents a cron scheduling example",
           "crontab -e" in readme_text)
     check("README documents a systemd-timer scheduling example",
           "systemctl --user enable --now" in readme_text and "OnCalendar" in readme_text)
 
     print("[group-d ruff] lint config + CI wiring")
-    pyproject_text = (_repo_root / "cli" / "pyproject.toml").read_text(encoding="utf-8")
-    check("cli/pyproject.toml declares a [tool.ruff] section",
+    pyproject_text = (_repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    check("pyproject.toml declares a [tool.ruff] section",
           "[tool.ruff]" in pyproject_text)
     check("ruff is scoped to real-bug rules (pyflakes + E9), not broad style rules",
           'select = ["F", "E9"]' in pyproject_text)
@@ -2515,7 +2515,7 @@ def main():
     print("[librarian-triage] recommendations over pending claims; never promotes")
     from librarian import triage as libtriage
     from librarian.config import LibrarianConfig as _LibCfg
-    from wiki import triage as wtriage
+    from brainconnect import triage as wtriage
 
     tr = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-tr-")))
     write(tr / "config.toml", (tr / "config.toml").read_text(encoding="utf-8")
@@ -2566,7 +2566,7 @@ def main():
         with Repo.open(start=tr) as r:
             r.ex("INSERT INTO claims(text, source_id, confidence, origin, status, created_at) "
                  "VALUES ('another pending claim', ?, 0.5, 'session/t', 'pending', ?)",
-                 (tsid, __import__("wiki.util", fromlist=["now_iso"]).now_iso()))
+                 (tsid, __import__("brainconnect.util", fromlist=["now_iso"]).now_iso()))
             r.conn.commit()
             bad_rep = libtriage.run(r, tcfg)
         check("triage rejects an out-of-vocabulary recommendation",
@@ -2578,7 +2578,7 @@ def main():
     print("[librarian-determinize] pure-code pre-filter resolves clear cases; "
           "the model runs only on the ambiguous residue")
     from librarian import adjudicate as libadj
-    from wiki import util as _du
+    from brainconnect import util as _du
 
     def _ins_claim(r, text, conf, origin, status, sid, when):
         r.ex("INSERT INTO claims(text,source_id,confidence,origin,status,created_at) "
@@ -3151,7 +3151,7 @@ def main():
     # ---------------- BUILD: first-run / failure UX --------------------------
     print("[build-ux] not-a-repo guard, `wiki init` in a fresh dir, status reachability")
     from librarian import cli as libcli
-    from wiki.cli import cmd_init as _cmd_init
+    from brainconnect.cli import cmd_init as _cmd_init
 
     # (1) A command that requires an existing brain, run outside any wiki-brain
     # repo, gives a clear actionable message — not a raw traceback, and not a
@@ -3164,8 +3164,8 @@ def main():
         notrepo_msg = str(e)
     check("repo-required command outside a brain raises (not silently misbehaves)",
           notrepo_msg is not None)
-    check("the not-a-repo message is actionable (names `wiki init` + cd)",
-          notrepo_msg is not None and "wiki init" in notrepo_msg
+    check("the not-a-repo message is actionable (names `brainconnect init` + cd)",
+          notrepo_msg is not None and "brainconnect init" in notrepo_msg
           and "not inside a wiki-brain repo" in notrepo_msg)
 
     # (2) `wiki init` itself must still work in a totally fresh directory (no
@@ -3195,7 +3195,7 @@ def main():
         else:
             os.environ["HOME"] = prev_home
 
-    # (3) `wiki-librarian status` surfaces reachability (+ why not) from
+    # (3) `brainconnect-librarian status` surfaces reachability (+ why not) from
     # client.reachable(), stubbed offline — never a live network call.
     st_root = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-status-")))
     write(st_root / "config.toml",
@@ -3709,9 +3709,9 @@ def main():
     # ---------------- Live-DB isolation (docs/MIGRATIONS.md) ----------------
     # Repo.open() migrates whatever DB it resolves to. These checks pin the two
     # facts that matter: a temp `root=` does NOT isolate the database (the trap
-    # that migrated a live DB during MCP verification), and WIKIBRAIN_DB does.
-    print("[isolation] WIKIBRAIN_DB is the isolation lever; a temp root is not")
-    from wiki.config import DB_ENV_VAR
+    # that migrated a live DB during MCP verification), and BRAINCONNECT_DB does.
+    print("[isolation] BRAINCONNECT_DB is the isolation lever; a temp root is not")
+    from brainconnect.config import DB_ENV_VAR
     _saved_db = os.environ.pop(DB_ENV_VAR, None)
     try:
         iso = Path(tempfile.mkdtemp(prefix="wikibrain-iso-"))
@@ -3729,17 +3729,52 @@ def main():
 
         os.environ[DB_ENV_VAR] = str(scratch)
         cfg2 = Config.load(iso)
-        check("WIKIBRAIN_DB overrides the config's db path", cfg2.db_path == scratch.resolve())
+        check("BRAINCONNECT_DB overrides the config's db path", cfg2.db_path == scratch.resolve())
         init_db(start=iso).close()
-        check("init_db under WIKIBRAIN_DB writes the scratch db, not the config's",
+        check("init_db under BRAINCONNECT_DB writes the scratch db, not the config's",
               scratch.exists() and not decoy.exists())
         with Repo.open(start=iso) as ir:
-            check("Repo.open under WIKIBRAIN_DB uses the scratch db",
+            check("Repo.open under BRAINCONNECT_DB uses the scratch db",
                   Path(ir.cfg.db_path) == scratch.resolve())
             check("Repo.open stamps the scratch db at the current schema version",
                   ir.one("PRAGMA user_version")[0] == schemamod.SCHEMA_VERSION)
         check("the config's real db was never created (isolation held)",
               not decoy.exists())
+
+        # The one rename shim: WIKIBRAIN_DB is honored (with a DeprecationWarning)
+        # only while BRAINCONNECT_DB is unset, so a pre-rename isolation setup
+        # keeps isolating instead of silently migrating a live DB.
+        from brainconnect.config import LEGACY_DB_ENV_VAR
+        _saved_legacy = os.environ.pop(LEGACY_DB_ENV_VAR, None)
+        try:
+            legacy_scratch = iso / "legacy-scratch.db"
+            os.environ.pop(DB_ENV_VAR, None)
+            os.environ[LEGACY_DB_ENV_VAR] = str(legacy_scratch)
+            with _warnings.catch_warnings(record=True) as _caught:
+                _warnings.simplefilter("always")
+                cfg3 = Config.load(iso)
+                legacy_path = cfg3.db_path
+            check("legacy WIKIBRAIN_DB still isolates when BRAINCONNECT_DB is unset",
+                  legacy_path == legacy_scratch.resolve())
+            check("honoring WIKIBRAIN_DB emits a DeprecationWarning naming both vars",
+                  any(issubclass(w.category, DeprecationWarning)
+                      and LEGACY_DB_ENV_VAR in str(w.message)
+                      and DB_ENV_VAR in str(w.message) for w in _caught))
+            os.environ[DB_ENV_VAR] = str(scratch)
+            with _warnings.catch_warnings(record=True) as _caught2:
+                _warnings.simplefilter("always")
+                cfg4 = Config.load(iso)
+                new_path = cfg4.db_path
+            check("BRAINCONNECT_DB wins over the legacy variable",
+                  new_path == scratch.resolve())
+            check("no deprecation warning when the new variable is set",
+                  not any(issubclass(w.category, DeprecationWarning)
+                          for w in _caught2))
+        finally:
+            if _saved_legacy is None:
+                os.environ.pop(LEGACY_DB_ENV_VAR, None)
+            else:
+                os.environ[LEGACY_DB_ENV_VAR] = _saved_legacy
     finally:
         if _saved_db is None:
             os.environ.pop(DB_ENV_VAR, None)

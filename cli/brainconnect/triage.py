@@ -3,7 +3,7 @@
 The librarian records promote/reject/hold RECOMMENDATIONS into `claim_triage`.
 This module only READS them, joined against the pending claims, so the human (or
 interactive `/maintain`) sees a pre-triaged review queue. Acting on a
-recommendation is still the human gate: `wiki promote`/`wiki reject`.
+recommendation is still the human gate: `brainconnect promote`/`brainconnect reject`.
 """
 from __future__ import annotations
 

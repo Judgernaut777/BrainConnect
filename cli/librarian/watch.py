@@ -1,4 +1,4 @@
-"""`wiki-librarian watch`: an event-driven loop over the two inputs that don't
+"""`brainconnect-librarian watch`: an event-driven loop over the two inputs that don't
 pass through any `wiki` command — the drop folder and the browser bookmark
 files. On a detected change it runs the matching pure-code ingest
 (`wiki.drop.scan` / `wiki.gather.bookmarks_sync`) and then the librarian
@@ -17,10 +17,10 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from wiki.db import Repo
-from wiki.config import Config
-from wiki import drop as dropmod
-from wiki import gather as gathermod
+from brainconnect.db import Repo
+from brainconnect.config import Config
+from brainconnect import drop as dropmod
+from brainconnect import gather as gathermod
 
 from . import extract as extractmod
 from .config import LibrarianConfig

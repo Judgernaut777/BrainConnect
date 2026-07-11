@@ -6,7 +6,7 @@ licence number, and does it across languages, with a maintained recognizer set.
 
 Loaded lazily: constructing an `AnalyzerEngine` pulls in spaCy and a language
 model, which is slow and must not happen at import time just because someone ran
-`wiki search`.
+`brainconnect search`.
 
 Presidio's own recall on free text is roughly 0.5 F1 on field-limited benchmarks.
 That is better than the baseline by a wide margin and still not a guarantee.

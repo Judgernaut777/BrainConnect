@@ -26,13 +26,13 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install core CLI (no optional extras)
-        run: pip install ./cli
+        run: pip install .
       - name: Entry-point smoke
         # Catches packaging / console-script breakage (both binaries import and
         # their parsers build) that the acceptance suite alone would not.
         run: |
-          wiki --help
-          wiki-librarian --help
+          brainconnect --help
+          brainconnect-librarian --help
       - name: Run acceptance suite
         # Pure Python, offline, temp DB. Also enforces: no API keys / no machine
         # paths in tracked files (the project's key-free guarantee).
@@ -49,6 +49,6 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Run ruff check
-        # Scoped conservatively via cli/pyproject.toml [tool.ruff]: real-bug
+        # Scoped conservatively via pyproject.toml [tool.ruff]: real-bug
         # rules only (pyflakes + syntax errors), no broad style rules.
         run: ruff check cli/

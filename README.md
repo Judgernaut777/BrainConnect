@@ -149,7 +149,7 @@ py -m venv .venv
 # POSIX (Linux/macOS) — from the repo root
 cp config.example.toml config.toml
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ./cli
+.venv/bin/python -m pip install -e .
 ```
 
 **2. Point the librarian at a local model.** Edit `config.toml` → `[librarian]`
@@ -432,7 +432,7 @@ Same setup on Linux/macOS:
 # from the repo root
 cp config.example.toml config.toml            # then edit paths.db etc.
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ./cli       # installs the CLI + trafilatura
+.venv/bin/python -m pip install -e .       # installs the CLI + trafilatura
 .venv/bin/wiki init                            # create DB + scaffold dirs
 ```
 

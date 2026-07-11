@@ -83,7 +83,7 @@ class SqliteFtsBackend:
     # ANDing every term matches nothing — an empty pack that reads as "the ledger
     # knows nothing" when it means "your query was a sentence". OR + bm25 ranks
     # claims matching more terms first, and the trust filter still runs after.
-    # `wiki search` keeps AND: there, the user typed exactly what they meant.
+    # `brainconnect search` keeps AND: there, the user typed exactly what they meant.
     MATCH_ALL = False
 
     def _fts(self, request: BackendSearchRequest, promoted_only: bool) -> list[dict]:
@@ -97,7 +97,7 @@ class SqliteFtsBackend:
         """Rank claims, preferring hybrid retrieval when it can contribute."""
         if not self.repo.one("SELECT 1 FROM embeddings LIMIT 1"):
             return (self._fts(request, promoted_only), "fts",
-                    "no embeddings indexed; keyword-only (run `wiki embed --all`)")
+                    "no embeddings indexed; keyword-only (run `brainconnect embed --all`)")
         try:
             rows = embedmod.hybrid_search(self.repo, request.query, k=request.limit,
                                           promoted_only=promoted_only,

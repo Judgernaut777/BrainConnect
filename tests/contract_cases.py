@@ -20,7 +20,7 @@ they ran on:
     are 1, 2, 3. No response below carries a timestamp.
 
 Nothing here writes to the live database: every case opens a scratch repo under
-`WIKIBRAIN_DB`.
+`BRAINCONNECT_DB`.
 """
 from __future__ import annotations
 
@@ -31,13 +31,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli"))
 
-from wiki import api as apimod                     # noqa: E402
-from wiki import candidates as candmod             # noqa: E402
-from wiki import errors as errmod                  # noqa: E402
-from wiki import recall as recallmod               # noqa: E402
-from wiki import scopes as scopesmod               # noqa: E402
-from wiki.db import Repo, init_db                  # noqa: E402
-from wiki.safety import pipeline as safetypipe     # noqa: E402
+from brainconnect import api as apimod                     # noqa: E402
+from brainconnect import candidates as candmod             # noqa: E402
+from brainconnect import errors as errmod                  # noqa: E402
+from brainconnect import recall as recallmod               # noqa: E402
+from brainconnect import scopes as scopesmod               # noqa: E402
+from brainconnect.db import Repo, init_db                  # noqa: E402
+from brainconnect.safety import pipeline as safetypipe     # noqa: E402
 
 #: Assembled by concatenation so this file never trips the repo's own
 #: "no API-key-like secrets in tracked files" self-scan.
@@ -83,8 +83,8 @@ class _Ledger:
         self.db = Path(self._tmp) / "ledger.db"
         (self.root / "config.toml").write_text(
             f'[paths]\ndb = "{self.db}"\n', encoding="utf-8")
-        self._prior = os.environ.get("WIKIBRAIN_DB")
-        os.environ["WIKIBRAIN_DB"] = str(self.db)
+        self._prior = os.environ.get("BRAINCONNECT_DB")
+        os.environ["BRAINCONNECT_DB"] = str(self.db)
         init_db(self.db)
         self.safety_cfg = safety_cfg
 
@@ -99,9 +99,9 @@ class _Ledger:
         self._repo.__exit__(*exc)
         safetypipe.clear_engine_cache()
         if self._prior is None:
-            os.environ.pop("WIKIBRAIN_DB", None)
+            os.environ.pop("BRAINCONNECT_DB", None)
         else:
-            os.environ["WIKIBRAIN_DB"] = self._prior
+            os.environ["BRAINCONNECT_DB"] = self._prior
         return False
 
 
@@ -199,7 +199,7 @@ def capture_result_quarantined() -> dict:
 def promotion_safety_refusal() -> dict:
     """The transport envelope for a blocked promotion.
 
-    Produced by raising the real exception and passing it through `wiki.errors`, so
+    Produced by raising the real exception and passing it through `brainconnect.errors`, so
     the envelope cannot drift from the taxonomy.
     """
     with _Ledger(BASELINE_ONLY) as repo:

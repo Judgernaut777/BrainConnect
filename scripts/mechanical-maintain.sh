@@ -8,18 +8,18 @@
 # maintain.md (claim extraction, synthesis, contradiction adjudication, skill
 # drafting) is done interactively via `/maintain` when convenient.
 #
-# Safe to run unattended: every step here is a zero-model `wiki` command. It
+# Safe to run unattended: every step here is a zero-model `brainconnect` command. It
 # commits locally but NEVER pushes — you review the morning diff and push.
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
-# Call the console script (NOT `python3 -m wiki`): the repo root holds the
-# generated wiki/ vault, which would shadow the `wiki` package for -m.
-wiki_bin="$repo/.venv/bin/wiki"
+# Call the console script (NOT `python3 -m brainconnect`): the repo root holds the
+# generated wiki/ vault, which would shadow the package for -m.
+wiki_bin="$repo/.venv/bin/brainconnect"
 if [ ! -x "$wiki_bin" ]; then
-  wiki_bin="wiki"
+  wiki_bin="brainconnect"
 fi
 
 log_dir="$repo/logs"
@@ -39,7 +39,7 @@ step 'gate (auto-promote boring tier)' gate
 step 'render'                          render
 step 'lint'                            lint
 step 'health'                          health
-# Local commit only — never push. `wiki commit` is a no-op-safe if nothing changed.
+# Local commit only — never push. `brainconnect commit` is a no-op-safe if nothing changed.
 step 'commit'                          commit "cron: mechanical maintain $(date '+%Y-%m-%d')"
 
 printf '==== done ====\n' >> "$log"

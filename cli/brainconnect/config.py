@@ -13,7 +13,34 @@ from pathlib import Path
 
 # Overrides `[paths] db`. The isolation lever for tests, MCP verification, and any
 # throwaway script — because opening a repo migrates whatever DB it resolves to.
-DB_ENV_VAR = "WIKIBRAIN_DB"
+DB_ENV_VAR = "BRAINCONNECT_DB"
+
+# The pre-rename name of DB_ENV_VAR. Honored, with a DeprecationWarning, only when
+# BRAINCONNECT_DB is unset — the one compatibility shim the rename kept, because a
+# stale script that silently stopped being isolated would migrate a live DB.
+LEGACY_DB_ENV_VAR = "WIKIBRAIN_DB"
+
+
+def db_env_override() -> str:
+    """The effective DB-path override from the environment, or "".
+
+    `BRAINCONNECT_DB` wins. `WIKIBRAIN_DB` is honored only when the new name is
+    unset, and warns: it exists so a pre-rename isolation setup keeps isolating
+    rather than silently falling through to the live database.
+    """
+    import warnings
+
+    new = os.environ.get(DB_ENV_VAR, "").strip()
+    if new:
+        return new
+    old = os.environ.get(LEGACY_DB_ENV_VAR, "").strip()
+    if old:
+        warnings.warn(
+            f"{LEGACY_DB_ENV_VAR} is deprecated; set {DB_ENV_VAR} instead "
+            "(honored this time)",
+            DeprecationWarning, stacklevel=2)
+        return old
+    return ""
 
 DEFAULTS = {
     "paths": {
@@ -54,7 +81,7 @@ DEFAULTS = {
         "enabled": False,       # off by default; the [semantic] extra is heavy (torch)
     },
     "mcp": {
-        "read_only": False,     # if True, `wiki mcp serve` omits the capture write tool
+        "read_only": False,     # if True, `brainconnect mcp serve` omits the capture write tool
         "recall_k": 8,          # default top-k claims returned by brain_recall
     },
     "safety": {
@@ -158,14 +185,16 @@ class Config:
     def db_path(self) -> Path:
         """Where the live database lives.
 
-        `WIKIBRAIN_DB` overrides `[paths] db` and takes precedence over everything.
-        It exists because `Repo.open()` runs forward migrations on EVERY open (see
-        docs/MIGRATIONS.md): a verification script that merely passes `root=` picks
-        the repo's config.toml and therefore still opens — and migrates — the
-        user's real `~/.wiki-brain/wiki.db`. Passing a temp root is NOT isolation.
-        Point this at a scratch file instead.
+        `BRAINCONNECT_DB` overrides `[paths] db` and takes precedence over
+        everything (`WIKIBRAIN_DB` is the deprecated fallback; see
+        `db_env_override`). It exists because `Repo.open()` runs forward
+        migrations on EVERY open (see docs/MIGRATIONS.md): a verification script
+        that merely passes `root=` picks the repo's config.toml and therefore
+        still opens — and migrates — the user's real `~/.wiki-brain/wiki.db`.
+        Passing a temp root is NOT isolation. Point this at a scratch file
+        instead.
         """
-        env = os.environ.get(DB_ENV_VAR, "").strip()
+        env = db_env_override()
         raw = env or self.data["paths"]["db"]
         return Path(os.path.expanduser(raw)).resolve()
 

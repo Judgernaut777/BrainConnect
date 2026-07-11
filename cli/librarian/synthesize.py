@@ -3,7 +3,7 @@
 The highest-value maintain step, in two parts, both model-authored but each with a
 firm gate the librarian NEVER crosses:
 
-  (1) Page synthesis. `wiki render` flags entity/concept pages whose promoted-claim
+  (1) Page synthesis. `brainconnect render` flags entity/concept pages whose promoted-claim
       basis changed since their synthesis prose was written
       (report["needs_synthesis_review"]). For each, the model drafts tight, sourced
       prose from the page's promoted claims + relations, written verbatim between the
@@ -27,9 +27,9 @@ from __future__ import annotations
 import json
 import re
 
-from wiki.db import Repo
-from wiki import render as rendermod
-from wiki import skills as skillsmod
+from brainconnect.db import Repo
+from brainconnect import render as rendermod
+from brainconnect import skills as skillsmod
 
 from . import client
 from .config import LibrarianConfig

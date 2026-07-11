@@ -50,12 +50,12 @@ def _whoami() -> str:
 
 
 def _spawn_librarian(cfg: Config, source_ids: list[int]):
-    """Fire-and-forget `wiki-librarian extract` for freshly-ingested sources.
+    """Fire-and-forget `brainconnect-librarian extract` for freshly-ingested sources.
 
     Opt-in via `[librarian] auto_extract` in config.toml. The model call happens
     in a SEPARATE detached process — this CLI itself still makes zero model
     calls. If the librarian is missing or fails, sources simply stay 'new' and
-    `wiki-librarian catch-up` (or a session) picks them up later.
+    `brainconnect-librarian catch-up` (or a session) picks them up later.
     """
     if not source_ids or not cfg.data.get("librarian", {}).get("auto_extract"):
         return
@@ -74,7 +74,7 @@ def _spawn_librarian(cfg: Config, source_ids: list[int]):
             print(f"librarian: extraction started for source #{sid}")
         except OSError as e:
             print(f"librarian: could not start ({e}); "
-                  f"run `wiki-librarian catch-up` later")
+                  f"run `brainconnect-librarian catch-up` later")
             return
 
 
@@ -95,7 +95,7 @@ def cmd_init(args):
     if db_path.exists():
         print(f"DB already exists at {db_path} (leaving as-is)")
         # must_exist=False: config.toml may not exist yet in a fresh directory
-        # (that's exactly the case `wiki init` handles) — the "not inside a
+        # (that's exactly the case `brainconnect init` handles) — the "not inside a
         # wiki-brain repo" guard in Repo.open() must not fire here.
         repo = Repo.open(must_exist=False)
     else:
@@ -182,9 +182,9 @@ def cmd_capture(args):
                   "the original text was not stored.")
         if quarantined:
             print(f"safety: QUARANTINED ({verdict.reason()}). It cannot be "
-                  "promoted without `wiki promote --safety-override "
+                  "promoted without `brainconnect promote --safety-override "
                   "--override-reason ...`.")
-        print("It is unvetted; a human must `wiki promote` it before it is "
+        print("It is unvetted; a human must `brainconnect promote` it before it is "
               "returned by trusted recall.")
     _spawn_librarian(Config.load(), [sid])
 
@@ -480,8 +480,8 @@ def cmd_triage(args):
             print(f"pending claims: {total} "
                   f"(promote {s['promote']}, reject {s['reject']}, "
                   f"hold {s['hold']}, untriaged {s['untriaged']})")
-            print("act on recommendations with `wiki promote/reject <ids>`; "
-                  "generate them with `wiki-librarian triage`.")
+            print("act on recommendations with `brainconnect promote/reject <ids>`; "
+                  "generate them with `brainconnect-librarian triage`.")
             return
         rows = triagemod.listing(repo, recommendation=args.recommendation)
         if _emit(rows, args.json):
@@ -511,7 +511,7 @@ def cmd_gate(args):
 
 # --- review levers ----------------------------------------------------------
 def _split_refs(ids: list[str], action: str) -> tuple[list[int], list[int]]:
-    """Sort `wiki promote/reject` arguments into (claim ids, candidate ids).
+    """Sort `brainconnect promote/reject` arguments into (claim ids, candidate ids).
 
     A bare integer is a claim — the pre-ledger morning-gate path, unchanged. A
     `candidate_N` ref takes the ledger path, which requires a scope and confidence.
@@ -854,7 +854,7 @@ def _dispatch_skill(repo, args):
             print(f"redundant pairs ({len(rd)}):")
             for r in rd:
                 print(f"  {r['a']} <-> {r['b']} (claims {r['claim_overlap']}, "
-                      f"text {r['text_overlap']}) — consider `wiki skill merge`")
+                      f"text {r['text_overlap']}) — consider `brainconnect skill merge`")
     elif c == "merge":
         skillsmod.merge(repo, skillsmod._norm_name(args.old), skillsmod._norm_name(args.into))
         print(f"merged {args.old} into {args.into} (archived {args.old}); "
@@ -936,7 +936,7 @@ def cmd_mcp(args):
 
 # --- parser -----------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="wiki", description="wiki-brain CLI (no model calls)")
+    p = argparse.ArgumentParser(prog="brainconnect", description="BrainConnect CLI (no model calls)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def addj(sp):
@@ -948,7 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     sa.add_argument("--origin", default="clip"); sa.add_argument("--title")
     sa.set_defaults(func=cmd_add)
 
-    # `wiki pending` (bare) keeps its pre-ledger meaning: sources awaiting
+    # `brainconnect pending` (bare) keeps its pre-ledger meaning: sources awaiting
     # extraction. `pending list` / `pending show` are the ledger's candidate
     # review queue (LEDGER_SPEC.md §12); `pending sources` names the old behaviour
     # explicitly.

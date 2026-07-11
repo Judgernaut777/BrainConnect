@@ -155,7 +155,7 @@ END;
 #
 # The skills tables (Phase 6) make Claude skills a *third* projection out of the
 # DB (after wiki pages): a skill's body is authored from PROMOTED claims only and
-# projected to .claude/skills/<name>/SKILL.md by `wiki skill render`. They mirror
+# projected to .claude/skills/<name>/SKILL.md by `brainconnect skill render`. They mirror
 # the pages model — `body` is free prose like pages.synthesis, `input_hash` is the
 # drift basis like pages.synthesis_input_hash. See SCHEMA.md and BUILD_SPEC.md §12.
 EXT_DDL = """

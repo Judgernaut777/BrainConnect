@@ -149,7 +149,7 @@ def preadjudicate_contradiction(repo: Repo, row) -> dict:
                 f"Supersede claim #{lose['id']} with the newer, more specific "
                 f"#{win['id']} ({spec[win['id']][0]} entities vs "
                 f"{spec[lose['id']][0]}, {cw} corroborating sources vs {cl}). "
-                f"Human confirms via `wiki supersede {lose['id']} {win['id']}`.")
+                f"Human confirms via `brainconnect supersede {lose['id']} {win['id']}`.")
             return {"decided": True, "proposal": proposal, "confidence": 0.8}
     return undecided
 

@@ -215,7 +215,7 @@ def health(repo: Repo) -> dict:
         # A ledger whose required safety engines cannot run is not healthy: it will
         # fail closed on every promotion and withhold on every recall.
         "ok": bool(backend_health.get("ok")) and bool(safety_health.get("ok")),
-        "service": "wikibrain",
+        "service": "brainconnect",
         "role": "trusted memory ledger",
         "schema_version": repo.one("PRAGMA user_version")[0],
         "backend": backend_health,

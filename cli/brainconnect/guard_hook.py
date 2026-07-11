@@ -1,8 +1,8 @@
 """DEPRECATED. The legacy optional `fascia-guard` seam. Inert.
 
-Superseded by `wiki.safety`, which is WikiBrain-local, enabled by default, and
+Superseded by `brainconnect.safety`, which is WikiBrain-local, enabled by default, and
 requires no third-party package. Nothing in WikiBrain calls this module any more:
-capture, recall and promotion all go through `wiki.safety.scan_for`.
+capture, recall and promotion all go through `brainconnect.safety.scan_for`.
 
 **Two safety pipelines must never both be authoritative.** Rather than define an
 ordering between them, this one is switched off. Every function below is a no-op,
@@ -23,7 +23,7 @@ import warnings
 LEGACY_FLAGS = ("FASCIA_GUARD", "FASCIA_GUARD_ENFORCE")
 
 _REPLACEMENT = (
-    "wiki.safety is now the built-in safety pipeline; it is enabled by default "
+    "brainconnect.safety is now the built-in safety pipeline; it is enabled by default "
     "and needs no external package. Configure it under [safety] in config.toml. "
     "See docs/SAFETY.md."
 )

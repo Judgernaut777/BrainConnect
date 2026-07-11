@@ -32,19 +32,19 @@ class Repo:
         config (`[paths] db`, default `~/.wiki-brain/wiki.db`), so passing a temp
         `start` is NOT isolation and will still migrate the user's live DB.
 
-        For tests, scripts and MCP verification, set `WIKIBRAIN_DB` to a scratch
+        For tests, scripts and MCP verification, set `BRAINCONNECT_DB` to a scratch
         path. See docs/MIGRATIONS.md.
         """
         cfg = Config.load(start)
         if must_exist and not cfg.found:
             raise SystemExit(
                 "error: not inside a wiki-brain repo — cd into one, or run "
-                "`wiki init` to create one here"
+                "`brainconnect init` to create one here"
             )
         db_path = cfg.db_path
         if must_exist and not db_path.exists():
             raise SystemExit(
-                f"error: no database at {db_path}. Run `wiki init` first."
+                f"error: no database at {db_path}. Run `brainconnect init` first."
             )
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
@@ -110,13 +110,13 @@ class Repo:
 
     def dump(self):
         """Rewrite db/dump.sql immediately. Public for callers that force a
-        refresh outside of finalize() (e.g. `wiki dump`, `wiki init`)."""
+        refresh outside of finalize() (e.g. `brainconnect dump`, `brainconnect init`)."""
         self._dump_pending = False
         out = self.root / "db" / "dump.sql"
         out.parent.mkdir(parents=True, exist_ok=True)
         lines = []
         for line in self.conn.iterdump():
-            # embeddings are regenerable (`wiki embed --all`) and, packed as hex
+            # embeddings are regenerable (`brainconnect embed --all`) and, packed as hex
             # float32 BLOBs, would otherwise bloat this git-committed file once
             # the [semantic] extra is in use. Keep the CREATE TABLE (schema stays
             # round-trippable) but drop the row data.

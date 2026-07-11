@@ -1,4 +1,4 @@
-"""`wiki-librarian maintain`: the whole judgment cycle in one command.
+"""`brainconnect-librarian maintain`: the whole judgment cycle in one command.
 
 Chains the librarian's advisory passes in maintain.md order — catch-up (extract
 every pending source), triage, adjudicate, synthesize — then the zero-model
@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import subprocess
 
-from wiki import health as healthmod
-from wiki import lint as lintmod
-from wiki import render as rendermod
+from brainconnect import health as healthmod
+from brainconnect import lint as lintmod
+from brainconnect import render as rendermod
 
 from . import adjudicate as adjudicatemod
 from . import client
@@ -76,11 +76,11 @@ def _housekeeping(repo) -> dict:
 
 
 def _commit(repo) -> bool:
-    """Mirror `wiki commit`: stage everything (git-ignored personal content is
+    """Mirror `brainconnect commit`: stage everything (git-ignored personal content is
     excluded by .gitignore) and commit. Returns True if a commit was created."""
     root = str(repo.root)
     subprocess.run(["git", "-C", root, "add", "-A"], check=False)
-    r = subprocess.run(["git", "-C", root, "commit", "-m", "wiki-librarian maintain"],
+    r = subprocess.run(["git", "-C", root, "commit", "-m", "brainconnect-librarian maintain"],
                        capture_output=True)
     return r.returncode == 0
 

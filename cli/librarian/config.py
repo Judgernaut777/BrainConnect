@@ -2,14 +2,14 @@
 
 Reuses the wiki CLI's root/config discovery so both halves read one file. The
 API key is NEVER stored in config — `api_key_env` names an environment variable
-that holds it, keeping the repo key-free (the `wiki lint` secret scan applies).
+that holds it, keeping the repo key-free (the `brainconnect lint` secret scan applies).
 """
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 
-from wiki.config import Config
+from brainconnect.config import Config
 
 DEFAULTS = {
     "auto_extract": False,  # ingest commands spawn extraction for new sources

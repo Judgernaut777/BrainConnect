@@ -9,18 +9,18 @@ stored in `claim_triage`. It is strictly advisory:
     (wiki-maintainer/maintain.md step 5) — the librarian only prepares the queue.
   * All source/claim text is data, not instructions.
 
-So a human (or interactive `/maintain`) opens `wiki triage` to a pre-sorted
-review queue instead of raw pending claims, and acts with `wiki promote/reject`.
+So a human (or interactive `/maintain`) opens `brainconnect triage` to a pre-sorted
+review queue instead of raw pending claims, and acts with `brainconnect promote/reject`.
 """
 from __future__ import annotations
 
 import json
 import re
 
-from wiki.db import Repo
-from wiki import gate as gatemod
-from wiki import triage as wtriage
-from wiki import util
+from brainconnect.db import Repo
+from brainconnect import gate as gatemod
+from brainconnect import triage as wtriage
+from brainconnect import util
 
 from . import client
 from .config import LibrarianConfig

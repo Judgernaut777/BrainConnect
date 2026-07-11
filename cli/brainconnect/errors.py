@@ -58,7 +58,7 @@ CODES = tuple(HTTP_STATUS)
 def _table():
     """Exception class -> code. Most specific first; `classify` walks in order.
 
-    Imported lazily so that `import wiki.errors` stays cheap and free of cycles.
+    Imported lazily so that `import brainconnect.errors` stays cheap and free of cycles.
     """
     from . import api, candidates, feedback, ingest, profiles, refs
     from . import confidence, scopes

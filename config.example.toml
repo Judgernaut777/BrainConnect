@@ -1,4 +1,4 @@
-# wiki-brain configuration — copy this file to `config.toml` and edit.
+# BrainConnect configuration — copy this file to `config.toml` and edit.
 #
 #   cp config.example.toml config.toml      # (PowerShell: Copy-Item)
 #
@@ -12,7 +12,7 @@
 # absolute path instead (e.g. "D:/wiki-brain/wiki.db") so it can't drift when
 # `~` resolves differently across accounts.
 #
-# The `WIKIBRAIN_DB` env var overrides this. Use it to point tests, scripts and
+# The `BRAINCONNECT_DB` env var overrides this. Use it to point tests, scripts and
 # MCP verification at a scratch database — opening a repo runs forward migrations
 # on the DB this resolves to, and a temp repo root does NOT isolate it.
 # See docs/MIGRATIONS.md.
@@ -22,7 +22,7 @@ db = "~/.wiki-brain/wiki.db"
 bookmarks = ["~/AppData/Local/Google/Chrome/User Data/Default/Bookmarks"]
 bookmark_folder = "wiki"        # only sync bookmarks under this browser folder
 
-# Optional: a folder you drop files into (PDF/DOCX/images/…) for `wiki drop`
+# Optional: a folder you drop files into (PDF/DOCX/images/…) for `brainconnect drop`
 # to ingest. Created on first use.
 drop_folder = "~/wiki-brain-drop"
 
@@ -70,7 +70,7 @@ stale_days = 30
 contradiction_days = 14
 
 [extract]
-# For `wiki drop` of PDFs/images (needs the optional [docs] extra).
+# For `brainconnect drop` of PDFs/images (needs the optional [docs] extra).
 ocr = true                 # allow Tesseract OCR for flat images
 tesseract_cmd = ""         # path to tesseract.exe on Windows, or "" to use PATH
 docling_ocr = true         # let Docling OCR scanned PDFs
@@ -83,8 +83,8 @@ enabled = false
 
 [mcp]
 # Expose the brain over MCP so any client (Claude Desktop, other harnesses) can
-# query it (needs the optional [mcp] extra). `wiki mcp info` prints the client
-# config snippet; `wiki mcp serve` runs the stdio server. No API key, no model
+# query it (needs the optional [mcp] extra). `brainconnect mcp info` prints the client
+# config snippet; `brainconnect mcp serve` runs the stdio server. No API key, no model
 # call — the server only wraps the read tools, plus the gated capture write.
 read_only = false          # true: serve read-only (omit the brain_capture write tool)
 recall_k = 8               # default top-k claims returned by brain_recall
@@ -128,7 +128,7 @@ auto_extract = false
 # Anthropic's compat endpoint) also work — set api_key_env for those.
 base_url = "http://localhost:11434/v1"
 
-# The API key is NEVER stored here (that would trip `wiki lint`'s secret scan).
+# The API key is NEVER stored here (that would trip `brainconnect lint`'s secret scan).
 # Give the NAME of an environment variable that holds it; "" means no key (local).
 api_key_env = ""                 # e.g. "OPENROUTER_API_KEY"
 

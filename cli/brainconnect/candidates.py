@@ -55,7 +55,7 @@ class CandidateNotFound(CandidateError):
     A subclass, so every existing `except CandidateError` still catches it and no
     caller changes. It exists because a transport cannot map one exception type onto
     two status codes, and 404 and 403 are not the same answer — see
-    `wiki.errors` and docs/CONTRACT.md.
+    `brainconnect.errors` and docs/CONTRACT.md.
     """
 
 

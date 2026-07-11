@@ -1,7 +1,7 @@
 [project]
-name = "wiki-brain-cli"
-version = "0.2.0"
-description = "Pure-code CLI for the wiki-brain LLM memory system (no model calls)"
+name = "brainconnect"
+version = "0.1.0"
+description = "BrainConnect: trusted memory ledger with a human promotion gate (pure-code CLI + HTTP service, no model calls)"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -18,13 +18,13 @@ media = ["youtube-transcript-api>=0.6"]                         # video captions
 whisper = ["faster-whisper>=1.0"]                               # local ASR (needs ffmpeg)
 semantic = ["sentence-transformers>=3", "numpy>=1.26"]          # local embeddings
 mcp = ["mcp>=1.2"]                                             # expose the brain as an MCP server (no API key, no model call)
-watch = ["watchdog>=4"]                                         # responsive `wiki-librarian watch`; stdlib poll fallback if absent
+watch = ["watchdog>=4"]                                         # responsive `brainconnect-librarian watch`; stdlib poll fallback if absent
 
-# Memory-safety detection engines (docs/SAFETY.md). WikiBrain owns the policy; these
-# are the optional engines that do the detecting. The built-in `baseline` engine is
-# pure stdlib and needs none of them, so a default install stays lightweight and
-# scans offline. Each engine reports itself `unavailable` — never "clean" — when its
-# dependency is absent.
+# Memory-safety detection engines (docs/SAFETY.md). BrainConnect owns the policy;
+# these are the optional engines that do the detecting. The built-in `baseline`
+# engine is pure stdlib and needs none of them, so a default install stays
+# lightweight and scans offline. Each engine reports itself `unavailable` — never
+# "clean" — when its dependency is absent.
 safety-secrets = ["detect-secrets>=1.5"]                        # entropy + maintained plugin set
 safety-pii = ["presidio-analyzer>=2.2"]                         # needs a spaCy model: `python -m spacy download en_core_web_lg`
 safety-injection = ["transformers>=4.40", "torch>=2.0"]         # local pinned classifier, CPU is fine
@@ -33,25 +33,28 @@ safety-all = ["detect-secrets>=1.5", "presidio-analyzer>=2.2", "transformers>=4.
 # there is no extra for them. They are found on PATH and run as subprocesses.
 
 [project.scripts]
-wiki = "wiki.cli:main"
+brainconnect = "brainconnect.cli:main"
 # The librarian is the model-BEARING half — a separate console script and a
-# separate process, so `wiki` above keeps its zero-model-call guarantee. It
-# speaks the OpenAI-compatible chat API over stdlib http, so it has no required
+# separate process, so `brainconnect` above keeps its zero-model-call guarantee.
+# It speaks the OpenAI-compatible chat API over stdlib http, so it has no required
 # dependency; configure an endpoint (local Ollama/LM Studio or a hosted key) in
 # [librarian] in config.toml.
-wiki-librarian = "librarian.cli:main"
+brainconnect-librarian = "librarian.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+# The packages live under cli/ (the repo root holds docs, tests and the
+# generated wiki/ vault); map the import root there for builds from the repo root.
+package-dir = {"" = "cli"}
 # Subpackages must be listed explicitly: setuptools does not recurse into a plain
-# `packages` list, so `wiki.backends` was silently absent from every wheel built
-# before this line existed.
+# `packages` list, so `brainconnect.backends` was silently absent from every wheel
+# built before this line existed.
 packages = [
-    "wiki", "wiki.backends", "wiki.safety", "wiki.safety.baseline",
-    "wiki.safety.engines", "librarian",
+    "brainconnect", "brainconnect.backends", "brainconnect.safety",
+    "brainconnect.safety.baseline", "brainconnect.safety.engines", "librarian",
 ]
 
 # Scoped conservatively: real-bug rules only (unused imports/names, undefined

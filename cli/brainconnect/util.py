@@ -74,7 +74,7 @@ def fts_query(terms: str) -> str:
     """Build a safe FTS5 MATCH expression (AND) from free user input.
 
     Each alphanumeric token becomes a quoted term ANDed together. This avoids
-    accidental FTS operator injection. Used for `wiki search` (high precision).
+    accidental FTS operator injection. Used for `brainconnect search` (high precision).
     """
     toks = _word.findall(terms)
     if not toks:

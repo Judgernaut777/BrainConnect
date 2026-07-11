@@ -72,7 +72,7 @@ def reachable(cfg: LibrarianConfig, *, timeout: int = 5) -> tuple[bool, str]:
     """Cheap liveness probe against the configured base_url. Returns (True,
     "reachable") if the host answers at all — any HTTP response (even 404)
     means something is listening — and (False, <reason>) on a connection/
-    timeout error, so callers (maintain's preflight, `wiki-librarian status`)
+    timeout error, so callers (maintain's preflight, `brainconnect-librarian status`)
     can show WHY a down endpoint failed instead of just that it did. No model
     call."""
     url = str(cfg.get("base_url")).rstrip("/")

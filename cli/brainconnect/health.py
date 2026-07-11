@@ -1,4 +1,4 @@
-"""Phase 3 `wiki health`: single composite score (lower = better).
+"""Phase 3 `brainconnect health`: single composite score (lower = better).
 
 score = open_contradictions*3 + orphans + unsourced_promoted*5
         + stale_candidates + fetch_failures

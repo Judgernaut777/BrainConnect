@@ -12,7 +12,7 @@ def search(repo: Repo, terms: str, *, promoted_only: bool = False,
            limit: int = 20, match_all: bool = True) -> list[dict]:
     """FTS5 search over claims + summaries, bm25-ranked.
 
-    `match_all=True` (the default, and what `wiki search` wants) ANDs the terms:
+    `match_all=True` (the default, and what `brainconnect search` wants) ANDs the terms:
     high precision, the user typed exactly what they meant.
 
     `match_all=False` ORs them: high recall, bm25 still ranks documents matching

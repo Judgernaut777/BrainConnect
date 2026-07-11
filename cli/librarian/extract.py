@@ -12,10 +12,10 @@ from __future__ import annotations
 import json
 import re
 
-from wiki.db import Repo
-from wiki import gate as gatemod
-from wiki import ingest
-from wiki import render as rendermod
+from brainconnect.db import Repo
+from brainconnect import gate as gatemod
+from brainconnect import ingest
+from brainconnect import render as rendermod
 
 from . import client
 from .config import LibrarianConfig

@@ -81,5 +81,5 @@
     ]
   },
   "schema_version": "<int>",
-  "service": "wikibrain"
+  "service": "brainconnect"
 }
