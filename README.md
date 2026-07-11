@@ -1,6 +1,6 @@
 # BrainConnect
 
-![CI](https://github.com/Judgernaut777/WikiBrain/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/Judgernaut777/BrainConnect/actions/workflows/ci.yml/badge.svg)
 ![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Model calls in CLI: zero](https://img.shields.io/badge/CLI%20model%20calls-zero-success.svg)
@@ -15,7 +15,7 @@
 > Python package and CLI are `brainconnect`, the MCP tools are `brain_*`, and the
 > isolation variable is `BRAINCONNECT_DB` — see [docs/STATUS.md](docs/STATUS.md).
 
-WikiBrain is a trusted memory ledger for agent systems. Agents can propose memory candidates, but trusted claims are human-gated, scoped, provenance-backed, and governed by promotion, rejection, contradiction, and supersession rules. It is designed to act as the authority layer for project memory while leaving task execution, routing, and workflow state to systems like AgentConnect.
+BrainConnect (formerly WikiBrain) is a trusted memory ledger for agent systems. Agents can propose memory candidates, but trusted claims are human-gated, scoped, provenance-backed, and governed by promotion, rejection, contradiction, and supersession rules. It is designed to act as the authority layer for project memory while leaving task execution, routing, and workflow state to systems like AgentConnect.
 
 ```mermaid
 flowchart LR
@@ -38,7 +38,7 @@ Three rules make it trustworthy:
   id; the ledger itself answers for status, scope and confidence. Swap in a vector
   store or a graph index and the trust boundary does not move.
 
-Every fact traces back to its source, and wiki-brain flags when a new fact
+Every fact traces back to its source, and BrainConnect flags when a new fact
 contradicts one you already trust.
 
 ### Documentation
@@ -54,7 +54,7 @@ contradicts one you already trust.
 | **BUILD_SPEC.md** | The origin design |
 | **SCHEMA.md** | Living conventions: vocabularies and state machines |
 
-> **Hacking on wiki-brain?** Opening a repo runs forward schema migrations
+> **Hacking on BrainConnect?** Opening a repo runs forward schema migrations
 > automatically — on *every* `Repo.open()`, including the one the MCP server
 > performs at launch. Passing a temporary repo root does **not** isolate the
 > database, which lives at an absolute path from `config.toml`. Set
@@ -66,7 +66,7 @@ contradicts one you already trust.
 
 ## The trusted memory ledger
 
-wiki-brain is a **trusted memory ledger** with a **pluggable retrieval backend**:
+BrainConnect is a **trusted memory ledger** with a **pluggable retrieval backend**:
 it owns trust and provenance, while the backend owns search sophistication. The
 full contract is in **[docs/LEDGER_SPEC.md](docs/LEDGER_SPEC.md)**.
 
@@ -110,7 +110,7 @@ at that.
 `status`. See [docs/LEDGER_SPEC.md §14.1](docs/LEDGER_SPEC.md).
 
 **Trusted is not the same as safe to expose.** Promotion decides *authority*; it says
-nothing about whether the text carries an API key. WikiBrain scans capture, recall and
+nothing about whether the text carries an API key. BrainConnect scans capture, recall and
 promotion: a credential is masked before it is ever stored, a trusted claim carrying one
 comes back **trusted with the credential masked**, and injection or tool-control payloads
 are withheld. No safety engine and no safety policy may ever set `trusted` — safety
@@ -261,7 +261,7 @@ the key env var is set, and a live **reachability** check — run it first if a
 pass fails.
 
 ### Run entirely on CPU — no GPU, no API, no monthly bill
-WikiBrain is built to be **whole without calling out to a paid or remote API**.
+BrainConnect is built to be **whole without calling out to a paid or remote API**.
 Many people can't run GPU models on their agent box, APIs cost money, and a leaner
 local path is simply more graceful. The `brainconnect` CLI is already 100% deterministic
 (ingest, gate, render, search, contradiction *detection*). The librarian is the
@@ -394,7 +394,7 @@ synthesize = "sonnet"               # cloud
 ```
 
 **Why this shape.** Mixing in a cloud model doesn't weaken the agent box's key
-posture — the vendor key lives on the inference box, and WikiBrain only holds a
+posture — the vendor key lives on the inference box, and BrainConnect only holds a
 token *you* issue and can rotate/revoke. Switching a task between local and cloud
 is a one-line edit to `[librarian.models]` (names LiteLLM already exposes); no code
 change. You also get LiteLLM's fallback chains (local down → spill to cloud) and
@@ -481,7 +481,7 @@ Open the `wiki/` folder as an Obsidian vault to browse (graph view works via
 
 ## Raw evidence filing
 Primary sources stay intact and retrievable. After `brainconnect file-claims` accepts an
-extraction, WikiBrain verifies the source hash, moves the raw artifact out of
+extraction, BrainConnect verifies the source hash, moves the raw artifact out of
 flat staging into a deterministic bucket, updates `sources.path`, marks the
 source page dirty, and refreshes `raw/INDEX.md`.
 
@@ -526,7 +526,7 @@ live MCP stdio server (needs the `[mcp]` extra) are exercised separately.
 ## The librarian (event-driven, any model)
 The judgment half doesn't need an interactive Claude Code session or a nightly
 schedule. The **librarian** (`brainconnect-librarian`, installed alongside `brainconnect`) is a
-*separate* process — so `wiki` keeps its zero-model-call guarantee — that runs
+*separate* process — so `brainconnect` keeps its zero-model-call guarantee — that runs
 the judgment passes (extract, triage, adjudicate, synthesize — or all of them via
 `maintain`) against **any OpenAI-compatible endpoint**: local and key-free
 (Ollama, LM Studio) or hosted (OpenRouter, DeepSeek, OpenAI, Anthropic's compat
@@ -623,7 +623,7 @@ brainconnect-librarian synthesize    # draft page prose + skill drafts for chang
 ```
 `adjudicate` writes a **proposal** onto each open contradiction/escalation but
 never resolves or closes them; `synthesize` leaves page prose and any new skill
-at `status='draft'`. The human readers/gates on the `wiki` side:
+at `status='draft'`. The human readers/gates on the `brainconnect` side:
 ```powershell
 brainconnect contradiction list ; brainconnect escalation list   # read the open items + proposals
 brainconnect contradiction resolve <id> ; brainconnect escalation close <id>   # you resolve/close
@@ -654,8 +654,8 @@ belt-and-suspenders backlog drain.
 
 **Windows Task Scheduler** — register it (runs whether or not you're logged on, no stored password):
 ```powershell
-$repo = "C:\path\to\wiki-brain"
-Register-ScheduledTask -TaskName "wiki-brain mechanical maintain" `
+$repo = "C:\path\to\BrainConnect"
+Register-ScheduledTask -TaskName "brainconnect mechanical maintain" `
   -Action (New-ScheduledTaskAction -Execute powershell.exe `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\mechanical-maintain.ps1`"") `
   -Trigger (New-ScheduledTaskTrigger -Daily -At 6:30am) `
@@ -669,23 +669,23 @@ of the `.ps1` above — same steps, same "commits but never pushes" contract).
 ```bash
 crontab -e
 # add:
-30 6 * * * /path/to/wiki-brain/scripts/mechanical-maintain.sh
+30 6 * * * /path/to/BrainConnect/scripts/mechanical-maintain.sh
 ```
 
 *systemd timer (runs whether or not you're logged in):*
 ```ini
-# ~/.config/systemd/user/wiki-brain-maintain.service
+# ~/.config/systemd/user/brainconnect-maintain.service
 [Unit]
-Description=wiki-brain mechanical maintain
+Description=brainconnect mechanical maintain
 
 [Service]
 Type=oneshot
-ExecStart=/path/to/wiki-brain/scripts/mechanical-maintain.sh
+ExecStart=/path/to/BrainConnect/scripts/mechanical-maintain.sh
 ```
 ```ini
-# ~/.config/systemd/user/wiki-brain-maintain.timer
+# ~/.config/systemd/user/brainconnect-maintain.timer
 [Unit]
-Description=Daily wiki-brain mechanical maintain
+Description=Daily brainconnect mechanical maintain
 
 [Timer]
 OnCalendar=*-*-* 06:30:00
@@ -695,7 +695,7 @@ Persistent=true
 WantedBy=timers.target
 ```
 ```bash
-systemctl --user enable --now wiki-brain-maintain.timer
+systemctl --user enable --now brainconnect-maintain.timer
 ```
 
 This is pure code — no agent, no model, no keys. The judgment half stays with the
@@ -709,7 +709,7 @@ session you choose to run the judgment passes — outside this repo, under whate
 provider or subscription you use. (BUILD_SPEC §10.)
 
 ## Using with Claude Code (the reference harness)
-wiki-brain is harness-neutral, but **Claude Code** is the reference harness it was
+BrainConnect is harness-neutral, but **Claude Code** is the reference harness it was
 built and tested against: it runs the judgment passes, and the brain's own
 `wiki-maintainer` skill lives in `.claude/skills/`. If you drive it with Claude
 Code, this is the concrete setup — and the project's original key-free, subscription-only posture.
@@ -736,7 +736,7 @@ enters as pending, faces the human gate). To wire the brain into Claude Desktop
 as an MCP client, `brainconnect mcp info` prints the snippet for `claude_desktop_config.json`.
 
 ## Acknowledgments
-wiki-brain builds on ideas from others:
+BrainConnect builds on ideas from others:
 
 - **Andrej Karpathy's "wiki"** idea for a personal, compounding knowledge base —
   the seed concept of compiling what you learn into a durable, linkable wiki
