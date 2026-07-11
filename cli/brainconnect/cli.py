@@ -86,6 +86,20 @@ def cmd_init(args):
     root = cfg.root
     for d in SCAFFOLD_DIRS:
         (root / d).mkdir(parents=True, exist_ok=True)
+    cfg_path = root / "config.toml"
+    if not cfg_path.exists():
+        # Every other command finds the repo root via the nearest config.toml
+        # ancestor, so an init that writes none leaves behind a directory in
+        # which `brainconnect health` / `brainconnect serve` immediately fail
+        # with "not inside a wiki-brain repo". Write a minimal config pointing
+        # at the DB this init resolved (env override included); never touch an
+        # existing config.toml.
+        cfg_path.write_text(
+            "# Written by `brainconnect init`. Minimal config; every key is\n"
+            "# optional and documented in config.example.toml.\n"
+            f'[paths]\ndb = "{cfg.db_path.as_posix()}"\n',
+            encoding="utf-8")
+        print(f"wrote {cfg_path}")
     log = root / "log.md"
     if not log.exists():
         log.write_text("# Operations log\n\n", encoding="utf-8")
