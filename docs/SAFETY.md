@@ -222,7 +222,7 @@ refused at load, as is an unknown engine name — a typo in `detct_secrets` that
 quietly disabled secret scanning would be the worst possible failure, because
 everything downstream would keep reporting clean.
 
-`wiki health` reports every engine's `enabled`, `required`, and `available`
+`brainconnect health` reports every engine's `enabled`, `required`, and `available`
 separately, and the ledger is **not healthy** when a required engine cannot run.
 
 ---

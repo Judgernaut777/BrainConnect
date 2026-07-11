@@ -4,25 +4,31 @@
 own, needs nothing else installed, and is not accepting new memory features. Work
 from here is stabilisation, documentation, and the deferred items listed below.
 
-Last verified: **2026-07-10**. `main` in sync with origin, working tree clean.
+Last verified: **2026-07-12**, at the 0.1.0 release prep.
 
 ## A note on the name
 
-The GitHub repository is now **`Judgernaut777/BrainConnect`** (the old
-`WikiBrain` URL redirects). The **code has not been renamed**: the local checkout is
-`WikiBrain/`, the Python package is `wiki`, the CLI is `wiki`, the MCP tools are
-`brain_*`, and the isolation variable is `WIKIBRAIN_DB`. Renaming those is deferred
-work, tracked below — it would break `mcp-agentconnect`'s integration test, which
-imports `wiki.api` by name.
+The GitHub repository is **`Judgernaut777/BrainConnect`** (the old `WikiBrain`
+URL redirects), and as of 2026-07-12 **the code is renamed to match**: the Python
+package is `brainconnect`, the CLI entry points are `brainconnect` and
+`brainconnect-librarian`, the MCP tools remain `brain_*`, and the isolation
+variable is `BRAINCONNECT_DB` (`WIKIBRAIN_DB` is honored with a
+`DeprecationWarning` only while the new name is unset — the single shim the
+rename kept, because a stale isolation setup that silently stopped working would
+migrate a live DB). The local checkout directory is still `WikiBrain/`, and the
+default live-DB path is still `~/.wiki-brain/wiki.db` — moving personal data on
+disk was deliberately out of scope (a known limitation, not an oversight).
 
-Read "BrainConnect" as the product and "`wiki`" as the module it currently ships as.
+Heads-up for `mcp-agentconnect`: its `tests/test_wikibrain_integration.py`
+does `importorskip("wiki.api")` and now **skips** instead of running; it should
+import `brainconnect.api`.
 
 ## Current checkpoint
 
 | Checkpoint | Commit | What it is |
 |---|---|---|
-| **Contract tip** | **`221e4f2`** | The consumer contract: fixtures in `tests/contract/`, and the refusal taxonomy in `cli/wiki/errors.py`. Additive only — no behaviour changed. |
-| **Behaviour tip** | **`b128e65`** | Memory safety: `cli/wiki/safety/`, enforced at capture, recall and promotion. **The last commit that changed enforced behaviour.** Diff against this when asking "did anything move?" |
+| **Contract tip** | **`221e4f2`** | The consumer contract: fixtures in `tests/contract/`, and the refusal taxonomy in `cli/brainconnect/errors.py`. Additive only — no behaviour changed. |
+| **Behaviour tip** | **`b128e65`** | Memory safety: `cli/brainconnect/safety/`, enforced at capture, recall and promotion. **The last commit that changed enforced behaviour.** Diff against this when asking "did anything move?" |
 | **Trust behaviour** | **`b69e13c`** | `trusted_only` began meaning trusted; disputed claims stopped leaking as trusted. |
 | **Tag** | **`v0.1.0-mvp-control-loop`** | Annotated, at `f10569d`. The MVP control-loop checkpoint, taken before safety landed. |
 
@@ -33,9 +39,9 @@ AgentConnect's dogfood; the contract has since been extended, additively, by saf
 | | |
 |---|---|
 | Schema version | **9** (`schema.SCHEMA_VERSION == migrate.latest_version()`); unchanged by safety |
-| Gate | **552 checks pass, 0 failures** |
+| Gate | **581 checks pass, 0 failures** |
 | Retrieval backend | `sqlite_fts` (the only one implemented) |
-| Transport | in-process Python API + MCP stdio. **No HTTP server** |
+| Transport | in-process Python API + MCP stdio + **`brainconnect serve` HTTP (default 127.0.0.1:8787)** |
 | Content safety | enforced at `memory_candidate`, `memory_recall`, `memory_promotion` |
 | Safety engines | `baseline` (built in, required) + 5 optional; `gliner` deferred |
 | Consumer contract | pinned by fixtures in `tests/contract/` — see [CONTRACT.md](CONTRACT.md) |
@@ -43,7 +49,7 @@ AgentConnect's dogfood; the contract has since been extended, additively, by saf
 Run the gate with:
 
 ```bash
-PYTHONPATH=/path/to/BrainConnect/cli python3 tests/acceptance.py
+python3 tests/acceptance.py       # from the repo root
 ```
 
 The gate is **offline**. The only safety engine that runs is the pure-stdlib
@@ -96,7 +102,7 @@ Stated normatively in [LEDGER_SPEC.md §14.1](LEDGER_SPEC.md).
 
 Promotion establishes *authority*. A scan judges *content*. They are independent, and
 **no safety engine and no safety policy may set `trusted`** — the gate asserts this
-structurally, by parsing every module in `cli/wiki/safety/` and checking the
+structurally, by parsing every module in `cli/brainconnect/safety/` and checking the
 identifier appears nowhere in its AST. Safety can withhold, mask, or block. It cannot
 vouch.
 
@@ -123,8 +129,10 @@ still cannot promote. A clean scan promotes nothing.
 `build_server()` performs at MCP launch. Migrations are forward-only and additive.
 
 **A temporary repo root is not isolation.** `root=` selects which `config.toml` is
-read; the database lives at an absolute path *inside* that config. Set **`WIKIBRAIN_DB`**
-to a scratch path in tests, scripts and MCP verification. Full detail, the 2026-07-10
+read; the database lives at an absolute path *inside* that config. Set
+**`BRAINCONNECT_DB`** to a scratch path in tests, scripts, MCP verification and
+any `brainconnect serve` you point a test at (the deprecated `WIKIBRAIN_DB`
+still works, with a warning, while the new name is unset). Full detail, the 2026-07-10
 incident where a verification script migrated the live database, and the rules for
 writing a migration: **[MIGRATIONS.md](MIGRATIONS.md)**.
 
@@ -165,15 +173,12 @@ forwards `safety_override` / `override_reason` on promotion. The field names Bra
 pinned in [CONTRACT.md](CONTRACT.md) were adopted verbatim. See
 [INTEGRATIONS.md](INTEGRATIONS.md#agentconnect-adoption).
 
-**No BrainConnect code change was needed this pass, and none was made.** The transport
-refusal envelope stays as published — nested under `error`, per [CONTRACT.md](CONTRACT.md).
-No running code on either side exercises it yet (`brainconnect serve` does not exist), so
-it remains a spec-level agreement until that server lands.
+## Transport: closed (2026-07-12)
 
-## Known gap: transport
-
-**BrainConnect ships no HTTP server.** AgentConnect's adapter expects a REST service
-at `http://localhost:8787`:
+**`brainconnect serve` exists and is tested over the wire.** It is a pure-stdlib
+HTTP server (`http.server`, fresh `Repo` per request — the MCP server's pattern)
+listening on `127.0.0.1:8787` by default, serving exactly the routes
+AgentConnect's adapter calls:
 
 ```
 POST /recall            POST /candidates/{candidate_id}/promote
@@ -181,43 +186,44 @@ POST /capture           GET  /candidates?status=pending&limit=
 POST /feedback          GET  /health
 ```
 
-The integration test closes this with a `transport` that dispatches those routes
-straight into `wiki.api` in-process. That is deliberate, and sufficient for the
-boundary it tests: real ledger, real promotion, real trust filter, real field shape.
-It exercises **no wire plumbing** — no serialisation, status codes, auth, or timeouts.
+Refusals use the canonical nested envelope via `errors.classify` /
+`errors.http_status` / `errors.envelope`. The HTTP surface does **not** accept a
+safety override (403 `forbidden`); overriding stays human-only, at the CLI.
+Optional bearer-token auth (`--token` / `BRAINCONNECT_TOKEN`) guards every route
+except `GET /health`. Full served contract: [CONTRACT.md](CONTRACT.md#the-served-contract-brainconnect-serve).
 
-> **A green integration suite means the semantics agree, not that the network path
-> exists.**
-
-`wiki serve` is the deferred follow-up that closes it, tracked separately on purpose
-so the semantic boundary and the transport surface cannot be confused for one another.
+The gate starts the real server on an ephemeral port with a temp ledger and
+exercises every route over a real socket — including a quarantined capture and a
+409 safety refusal over the wire, asserted byte-equal to the in-process envelope.
+On 2026-07-12 the pass was additionally cross-checked by driving
+`mcp-agentconnect`'s real `WikiBrainMemoryAdapter` (httpx) against a live
+`brainconnect serve`: health, capture, quarantine flag, promotion, a safety
+refusal surfacing as `MemorySafetyRefused`, trusted recall, feedback and
+`list_pending` all behaved as pinned.
 
 ## Deferred work
 
 Ordered by how much each one blocks. Nothing here is started.
 
-1. **`brainconnect serve`** — the HTTP transport above. The only item another
-   repository is waiting on. Its refusal envelope and status codes are already
-   specified and tested; see [CONTRACT.md](CONTRACT.md#refusal-semantics).
-2. **`source_ingest` safety surface** — scan raw source documents on the way in, with
+1. **`source_ingest` safety surface** — scan raw source documents on the way in, with
    the whole-file engines promotion already uses. This becomes load-bearing the moment
    anything ingests third-party text; see the ToolConnect notes.
-3. **`obsidian_projection` safety surface** — redact before writing markdown. Lowest
+2. **`obsidian_projection` safety surface** — redact before writing markdown. Lowest
    urgency of the three: the projection is regenerable from the database, so it is the
    one surface where a miss is repairable.
-4. **GLiNER** as a custom Presidio recognizer, for PII recall above Presidio's own
+3. **GLiNER** as a custom Presidio recognizer, for PII recall above Presidio's own
    field-limited ~0.5 F1. Deliberately absent from the engine registry until it exists.
-5. **Retrieval backends** beyond `sqlite_fts` — `graphiti`, `cognee`, `qdrant`,
+4. **Retrieval backends** beyond `sqlite_fts` — `graphiti`, `cognee`, `qdrant`,
    `chroma`, `llamaindex` are named in the registry and fail loudly.
-6. **The code rename** — package `wiki` → something matching BrainConnect, CLI entry
-   point, `WIKIBRAIN_DB`, the `brain_*` MCP tool names. Coordinate with
-   `mcp-agentconnect`, which imports `wiki.api` by name.
+5. **Consumer-side rename adoption** — `mcp-agentconnect`'s integration test
+   still imports `wiki.api` and therefore skips; it should import
+   `brainconnect.api`. (The rename itself shipped 2026-07-12.)
 
 ## Change policy
 
 No new memory features. Do **not** add: recall profiles, retrieval backends, MCP
 tools, promotion paths, recall semantics, ingestion behaviour, schema columns, or
-`wiki serve`.
+new HTTP routes beyond the six `brainconnect serve` publishes.
 
 Code changes are in scope only for a concrete:
 

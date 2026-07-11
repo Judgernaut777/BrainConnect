@@ -4,6 +4,44 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [brainconnect 0.1.0] — 2026-07-12
+
+The first release under the product's real name. The version restarts at 0.1.0
+because the *package* is new: `brainconnect` replaces `wiki-brain-cli` (whose
+entries continue below).
+
+### Changed — the rename (clean, no long-lived shims)
+- Python package `wiki` → **`brainconnect`**; console scripts `wiki` /
+  `wiki-librarian` → **`brainconnect`** / **`brainconnect-librarian`**; repo-root
+  wrappers `wiki.{sh,cmd,ps1}` → `brainconnect.{sh,cmd,ps1}`.
+- MCP server name `wiki-brain` → **`brainconnect`** (the tools stay `brain_*`);
+  `health()` now reports `"service": "brainconnect"`.
+- Isolation variable `WIKIBRAIN_DB` → **`BRAINCONNECT_DB`**. The one shim kept:
+  `WIKIBRAIN_DB` is honored with a `DeprecationWarning` while `BRAINCONNECT_DB`
+  is unset, so a pre-rename isolation setup keeps isolating instead of silently
+  migrating a live DB.
+- Packaging moved to a root `pyproject.toml` (`pip install .` from the repo
+  root): name `brainconnect`, version `0.1.0`, `package-dir` mapping onto `cli/`.
+- Contract fixtures regenerated: the `service` string and one degraded-retrieval
+  warning message changed; no field shapes moved.
+- **Known limitation:** the default live-DB path is still `~/.wiki-brain/wiki.db`
+  — moving personal data on disk was deliberately out of scope.
+
+### Added — `brainconnect serve`
+- A real HTTP transport onto the ledger (default `127.0.0.1:8787`), pure stdlib,
+  serving exactly the routes AgentConnect's `WikiBrainMemoryAdapter` calls:
+  `POST /recall`, `POST /capture`, `POST /candidates/{id}/promote`,
+  `GET /candidates?status=&limit=`, `POST /feedback`, `GET /health`.
+- Refusals answer with the canonical nested envelope via
+  `errors.classify`/`http_status`/`envelope`; the HTTP surface refuses
+  `safety_override` as `forbidden` (overrides stay human-only, at the CLI).
+- Optional bearer-token auth (`--token` / `BRAINCONNECT_TOKEN`) on every route
+  except `GET /health`; constant-time comparison; failures are `forbidden`.
+- Over-the-wire acceptance tests: a real server on an ephemeral port with a temp
+  ledger, all six routes, a quarantined capture and a 409 safety refusal on the
+  wire, asserted byte-equal to the in-process envelope; bearer-token mode.
+- Served contract published in `docs/CONTRACT.md`.
+
 ## [0.2.0]
 
 The librarian: a provider-agnostic, model-bearing second half alongside the

@@ -96,7 +96,7 @@ string refs** — `claim_4`, `candidate_12`, `source_7` — which are what agent
 the CLI accept and echo. `wiki.refs` converts both ways and accepts a bare integer.
 
 > **Migrations run on every `Repo.open()`**, including the one `build_server()`
-> performs. A temp `root=` does not isolate the database — set `WIKIBRAIN_DB`.
+> performs. A temp `root=` does not isolate the database — set `BRAINCONNECT_DB`.
 > See [MIGRATIONS.md](MIGRATIONS.md).
 
 ### 5.1 Source — evidence, not fact
@@ -305,7 +305,7 @@ Small and safe. Agent-facing default: **`brain_recall`, `brain_capture`,
 `brain_feedback`** (plus the raw query tools `brain_search`, `brain_hybrid`,
 `brain_graph`).
 
-Human-gated, exposed **only** under `wiki mcp serve --review`: `brain_pending`,
+Human-gated, exposed **only** under `brainconnect mcp serve --review`: `brain_pending`,
 `brain_promote`, `brain_reject`.
 
 | mode | tools |
@@ -334,7 +334,7 @@ wiki feedback claim_4 --feedback stale --note ...
 wiki project obsidian
 ```
 
-`wiki promote` / `wiki reject` are polymorphic on the ref: a `candidate_N` ref (or
+`brainconnect promote` / `brainconnect reject` are polymorphic on the ref: a `candidate_N` ref (or
 `--candidate`) takes the candidate path and requires a scope + confidence; a bare
 integer keeps the pre-rework claim path used by the morning gate. This is why the
 API emits prefixed refs.
@@ -343,7 +343,7 @@ The CLI stays deterministic. Model-bearing work stays in `wiki-librarian`.
 
 ## 13. Obsidian projection
 
-First-class. `wiki project obsidian` renders the vault plus `wiki/ledger.md`.
+First-class. `brainconnect project obsidian` renders the vault plus `wiki/ledger.md`.
 
 Claim lines carry status, confidence label, scope, validity, supersession link, and
 a contradiction warning. Sections:
@@ -454,7 +454,7 @@ sufficient for the boundary it tests: it exercises the real ledger, real promoti
 the real trust filter, and the real API field shape. What it does not exercise is
 wire plumbing — serialisation, status codes, auth, timeouts.
 
-**`wiki serve` is a separate, later change.** It is tracked here rather than folded
+**`brainconnect serve` shipped 2026-07-12** (see CONTRACT.md). It was tracked here rather than folded
 into the semantic work so the trust boundary and the transport surface cannot be
 confused for one another: a green integration suite means the *semantics* agree, not
 that the network path exists.

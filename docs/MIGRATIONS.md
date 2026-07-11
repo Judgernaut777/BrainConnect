@@ -2,7 +2,7 @@
 
 ## The hazard, stated once
 
-**`Repo.open()` runs forward migrations on every open.** Not on `wiki migrate`. Not
+**`Repo.open()` runs forward migrations on every open.** Not on `brainconnect migrate`. Not
 on an explicit opt-in. Every open — including the one `build_server()` performs to
 resolve the repo root, and the one every `wiki` subcommand performs.
 
@@ -22,21 +22,24 @@ category of bug worth naming rather than tolerating.
 
 ## Isolating a test, a script, or an MCP verification
 
-Set **`WIKIBRAIN_DB`**. It overrides `[paths] db` and takes precedence over the
+Set **`BRAINCONNECT_DB`**. It overrides `[paths] db` and takes precedence over the
 config file and `$HOME` alike. This is the lever; use it in anything throwaway.
 
 ```bash
-WIKIBRAIN_DB=$(mktemp -d)/wiki.db python3 scripts/verify_mcp.py
+BRAINCONNECT_DB=$(mktemp -d)/scratch.db python3 scripts/verify_mcp.py
 ```
 
 ```python
-os.environ["WIKIBRAIN_DB"] = str(tmp / "wiki.db")
+os.environ["BRAINCONNECT_DB"] = str(tmp / "scratch.db")
 build_server(root=repo_root)          # now provably cannot touch the live DB
 ```
 
 Setting an isolated `$HOME` also works (the default path is `~`-relative), but only
 by accident of the default — a config with an explicit absolute `db =` ignores
-`$HOME` entirely. Prefer `WIKIBRAIN_DB`, which cannot be defeated that way.
+`$HOME` entirely. Prefer `BRAINCONNECT_DB`, which cannot be defeated that way. (The pre-rename
+`WIKIBRAIN_DB` is still honored, with a `DeprecationWarning`, while the new name
+is unset — so an old script keeps isolating instead of silently migrating the
+live DB.)
 
 `tests/acceptance.py` is already safe: `make_repo()` writes a `config.toml` whose
 `db` points inside a `tempfile.mkdtemp()`. Follow that pattern, or set the env var.

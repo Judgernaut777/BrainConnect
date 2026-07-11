@@ -1,10 +1,10 @@
 # CONTRACT.md — the response shapes a consumer may rely on
 
-> **Product: BrainConnect. Current Python module and CLI: `wiki`.**
-> The MCP tools are `brain_*` and the isolation variable is `WIKIBRAIN_DB`. That
-> rename is deferred; see [STATUS.md](STATUS.md). Note that `health()` reports
-> `"service": "wikibrain"` for the same reason — it is the module's name, and it will
-> change only when the module does.
+> **Product: BrainConnect. Python module and CLI: `brainconnect`** (renamed from
+> `wiki` on 2026-07-12; see [STATUS.md](STATUS.md)). The MCP tools are `brain_*`
+> and the isolation variable is `BRAINCONNECT_DB` (legacy `WIKIBRAIN_DB` is
+> honored with a `DeprecationWarning` while the new name is unset). `health()`
+> reports `"service": "brainconnect"`.
 
 This document, and the fixtures beside it, exist because BrainConnect emits fields
 that a consumer can miss. AgentConnect misses three of them today: `safety` on a
@@ -131,7 +131,7 @@ Pinned by `capture_result_clean.json` and `capture_result_quarantined.json`.
 ```jsonc
 {
   "ok": false,                 // false when a required safety engine cannot run
-  "service": "wikibrain", "role": "trusted memory ledger",
+  "service": "brainconnect", "role": "trusted memory ledger",
   "schema_version": 9, "backend": { … }, "ledger": { … }, "profiles": [ … ],
   "safety": {
     "enabled": true, "ok": false,
@@ -159,12 +159,11 @@ Pinned by `health_degraded_required_engine.json`.
 ## Refusal semantics
 
 BrainConnect's in-process API refuses by **raising**. A transport cannot: it must
-answer with a code. `cli/wiki/errors.py` is that mapping — five codes, an HTTP status,
+answer with a code. `cli/brainconnect/errors.py` is that mapping — five codes, an HTTP status,
 and whether a retry could ever help.
 
-**Nothing in the runtime calls `wiki.errors`.** It is the vocabulary the contract tests
-assert against, and the one a future `brainconnect serve` will use. Adding it changed
-no behaviour.
+**`brainconnect.errors` is the vocabulary of every refusal** — asserted by the
+contract tests, and answered on the wire by `brainconnect serve`.
 
 | Code | HTTP | Retryable | Raised by | Means |
 |---|---|---|---|---|
@@ -192,7 +191,7 @@ request would be a guess dressed as an answer.
 
 ### The refusal envelope
 
-Intended for `brainconnect serve`. Produced today by `errors.envelope(exc)`, and pinned
+Served by `brainconnect serve` and produced by `errors.envelope(exc)`; pinned
 by `promotion_safety_refusal.json`:
 
 ```jsonc
@@ -215,22 +214,53 @@ severities, spans, engine attribution.
 > refused has published it. The gate asserts this.
 
 The **override is deliberately absent from this envelope.** It is human-only, at the
-CLI (`wiki promote --safety-override --override-reason …`), requires a non-empty
+CLI (`brainconnect promote --safety-override --override-reason …`), requires a non-empty
 reason, records the actor, and retains the original findings. A control plane must
 surface a refusal to a human. It must not retry around it, and there is no field here
 that would let it.
 
-### `brainconnect serve`, when it is built
+## The served contract: `brainconnect serve`
 
-It is **not** built, and this document does not authorise building it. When it is:
+Built 2026-07-12. A pure-stdlib HTTP server (`http.server`; a fresh `Repo` per
+request), default **`127.0.0.1:8787`**, run with:
 
-- map exceptions with `errors.classify` / `errors.http_status`; do not re-derive the
-  taxonomy from message strings;
-- return `errors.envelope(exc)` as the body;
-- keep the routes AgentConnect's adapter already expects — see
-  [STATUS.md](STATUS.md#known-gap-transport);
-- add wire-level fixtures then. The ones here pin *semantics*, and a green semantic
-  suite means the shapes agree, not that the network path exists.
+```bash
+brainconnect serve [--host 127.0.0.1] [--port 8787] [--token TOKEN]
+```
+
+It serves **exactly six routes** — the ones AgentConnect's
+`WikiBrainMemoryAdapter` calls — and refuses everything else with a `not_found`
+envelope. Every response body below is the corresponding in-process shape from
+this document, unchanged: the gate asserts wire-vs-in-process equality for both
+a recall pack and a refusal envelope.
+
+| Route | Body (request → response) |
+|---|---|
+| `POST /recall` | `{query, profile?, scopes?, max_items?, trusted_only?, include_pending?, include_superseded?, task_id?}` → the recall pack above |
+| `POST /capture` | `{text, origin_actor_id, origin_actor_type?, source_ref?, tags?, proposed_scopes?, task_id?}` → the capture result above (`origin_actor_id` is required; the ledger records who proposed a claim and never guesses) |
+| `POST /candidates/{id}/promote` | `{promoted_by, confidence, scope?, note?, reviewer_type?}` → the promoted claim, with `claim_id` echoed beside `id`. **`safety_override` / `override_reason` are refused with 403 `forbidden`** — the override is human-only, at the CLI, and no HTTP field reaches it |
+| `GET /candidates?status=pending&limit=N` | → `{"count": N, "candidates": [...]}` (limit capped at 500) |
+| `POST /feedback` | `{feedback, actor_id, memory_item_id?/claim_id?, source_id?, note?, task_id?}` → `{"recorded": true}`. `memory_item_id` is AgentConnect's name for `claim_id`; both are accepted, a contradiction between them is `invalid_request` |
+| `GET /health` | → the health shape above |
+
+Rules the transport adds — and the only ones it adds:
+
+- **Envelope, always.** Every refusal is `errors.envelope(exc)` with
+  `errors.http_status(exc)`; the taxonomy above is never re-derived from message
+  strings. A malformed body, an unknown field, a missing route — all wear the
+  same nested `{"error": {code, message, retryable, safety?}}`.
+- **Optional bearer token.** With `--token` (or `BRAINCONNECT_TOKEN`) set, every
+  route except `GET /health` requires `Authorization: Bearer <token>` (the bare
+  token is also accepted; comparison is constant-time). A missing or wrong
+  credential is 403 `forbidden` — AgentConnect maps that to
+  `MemoryAuthorizationError`, the never-retry class. `GET /health` stays open:
+  a liveness probe that cannot ask "are you degraded?" invents the answer from
+  refusals instead.
+- **Nulls are absences.** Adapter clients send explicit `null` for unset
+  optionals; the server treats them as absent so dataclass defaults apply.
+- **The DB it serves is the one the resolved config (or `BRAINCONNECT_DB`)
+  points at, and `Repo.open` migrates on every request.** Point a test server at
+  a scratch DB, never at the live one.
 
 ---
 

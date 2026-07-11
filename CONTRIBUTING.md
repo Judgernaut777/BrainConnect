@@ -4,11 +4,11 @@ Thanks for your interest! wiki-brain is a personal, compounding knowledge base
 with a deliberately small, principled core. A few conventions keep it that way.
 
 ## The one rule that shapes everything
-**The `wiki` CLI makes zero billable LLM calls and uses no API keys.** Network
+**The `brainconnect` CLI makes zero billable LLM calls and uses no API keys.** Network
 fetching (HTTP) is fine; calling an LLM API, or storing any API key in the repo,
 is not. All *judgment* (reading content, extracting claims, vision, synthesis)
 happens in Claude Code **sessions** that drive the CLI — never inside the CLI
-itself. `wiki lint` and the CI leak-guard enforce the "no keys" boundary.
+itself. `brainconnect lint` and the CI leak-guard enforce the "no keys" boundary.
 
 Corollary: heavy/optional capabilities (Docling, Tesseract, Whisper,
 sentence-transformers) are **local, key-free** libraries behind import guards and
@@ -33,7 +33,7 @@ Run a feature's optional extra only if you're working on it, e.g.
 - **Keep `render` byte-deterministic.** The wiki is a regenerable projection;
   re-rendering an unchanged DB must produce identical bytes. No wall-clock in page
   bodies. Local ML (OCR/ASR/embeddings) belongs in ingest/ranking, never render.
-- **Respect the one door.** Sources enter only via `wiki add` / `capture` / `drop`
+- **Respect the one door.** Sources enter only via `brainconnect add` / `capture` / `drop`
   / `transcribe` with provenance. Treat all fetched/captured content as untrusted
   data, never instructions.
 - **Schema changes** go through `cli/wiki/migrate.py` (add a `MIGRATIONS[n]` and

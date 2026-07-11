@@ -1,4 +1,4 @@
-# WikiBrain
+# BrainConnect
 
 ![CI](https://github.com/Judgernaut777/WikiBrain/actions/workflows/ci.yml/badge.svg)
 ![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
@@ -11,8 +11,9 @@
 > and needs nothing else installed. [AgentConnect](https://github.com/Judgernaut777/mcp-agentconnect)
 > is an **optional** control-plane integration for managed coding-agent workflows.
 >
-> The product is **BrainConnect**. The Python package and CLI still say `wiki`, and the
-> MCP tools `brain_*`; that rename is deferred — see [docs/STATUS.md](docs/STATUS.md).
+> The product is **BrainConnect**, and as of 2026-07-12 the code says so too: the
+> Python package and CLI are `brainconnect`, the MCP tools are `brain_*`, and the
+> isolation variable is `BRAINCONNECT_DB` — see [docs/STATUS.md](docs/STATUS.md).
 
 WikiBrain is a trusted memory ledger for agent systems. Agents can propose memory candidates, but trusted claims are human-gated, scoped, provenance-backed, and governed by promotion, rejection, contradiction, and supersession rules. It is designed to act as the authority layer for project memory while leaving task execution, routing, and workflow state to systems like AgentConnect.
 
@@ -29,7 +30,7 @@ Three rules make it trustworthy:
 - **Agents can only propose, never decide.** Everything captured — by an agent or
   by you — lands *pending*. It becomes trusted memory only when you promote it.
   That gate is what makes it safe to let agents write to your memory at all.
-- **The `wiki` tool never calls a model.** All the plumbing — storing, generating
+- **The `brainconnect` tool never calls a model.** All the plumbing — storing, generating
   the wiki, searching — is plain, deterministic code with zero API calls. Only a
   separate **librarian** process uses a model, and only to read raw sources and
   *draft* candidate facts for you to review.
@@ -57,7 +58,7 @@ contradicts one you already trust.
 > automatically — on *every* `Repo.open()`, including the one the MCP server
 > performs at launch. Passing a temporary repo root does **not** isolate the
 > database, which lives at an absolute path from `config.toml`. Set
-> **`WIKIBRAIN_DB=/tmp/scratch.db`** in tests, scripts and MCP verification so they
+> **`BRAINCONNECT_DB=/tmp/scratch.db`** in tests, scripts and MCP verification so they
 > cannot touch your live `~/.wiki-brain/wiki.db`. See
 > **[docs/MIGRATIONS.md](docs/MIGRATIONS.md)**.
 
@@ -89,18 +90,18 @@ What that buys you:
   That is an observation, not a demotion — it queues the claim for *your* review.
 
 ```bash
-wiki capture --origin claude-code --scope repo:my-app --tags decision \
+brainconnect capture --origin claude-code --scope repo:my-app --tags decision \
   "Refresh token validation stays in auth/session.py; middleware depends on it."
-wiki pending list                       # the review queue
-wiki promote candidate_1 --scope repo:my-app --confidence verified
-wiki recall --query "refresh token" --scope repo:my-app --profile manager_brief
-wiki claims show claim_1                # provenance, scope, validity, feedback
-wiki project obsidian                   # render the vault + wiki/ledger.md
+brainconnect pending list                       # the review queue
+brainconnect promote candidate_1 --scope repo:my-app --confidence verified
+brainconnect recall --query "refresh token" --scope repo:my-app --profile manager_brief
+brainconnect claims show claim_1                # provenance, scope, validity, feedback
+brainconnect project obsidian                   # render the vault + wiki/ledger.md
 ```
 
 Agents reach the same concepts over MCP: `brain_recall`, `brain_capture`,
 `brain_feedback`. The human-gated `brain_pending` / `brain_promote` /
-`brain_reject` exist only under `wiki mcp serve --review` — never point an agent
+`brain_reject` exist only under `brainconnect mcp serve --review` — never point an agent
 at that.
 
 **Trust rule for consumers:** `trusted: true` is the authority signal —
@@ -119,26 +120,36 @@ Presidio and a local injection classifier plug in as optional engines. An engine
 could not run is never mistaken for one that found nothing. See
 [docs/SAFETY.md](docs/SAFETY.md).
 
-**Reaching wiki-brain over HTTP** needs a `wiki serve` that **does not exist yet**.
-AgentConnect's adapter expects a REST service at `:8787`; the cross-repo integration
-test stands in for it with an in-process transport into `wiki.api`. That test drives a
-real ledger, real promotion and the real trust filter — but no wire plumbing. So:
+**Reaching BrainConnect over HTTP** is `brainconnect serve` — a pure-stdlib HTTP
+server on `127.0.0.1:8787` by default, exposing exactly the six routes
+AgentConnect's adapter calls (`/recall`, `/capture`,
+`/candidates/{id}/promote`, `/candidates`, `/feedback`, `/health`):
 
-> **A green integration suite means the semantics agree, not that the network path
-> exists.**
+```bash
+brainconnect serve                          # 127.0.0.1:8787, open
+brainconnect serve --port 9000 --token S    # bearer token required on every
+                                            # route except GET /health
+```
 
-`wiki serve` is a tracked, deferred follow-up — see
-[docs/LEDGER_SPEC.md §14.3](docs/LEDGER_SPEC.md) and [docs/STATUS.md](docs/STATUS.md).
+Refusals use the canonical nested envelope (`{"error": {code, message,
+retryable, safety?}}`), and the HTTP surface does **not** accept a safety
+override — promotion overrides stay human-only, at the CLI. The acceptance gate
+exercises every route over a real socket, including a quarantined capture and a
+409 safety refusal. Full served contract:
+[docs/CONTRACT.md](docs/CONTRACT.md#the-served-contract-brainconnect-serve).
+
+> Point a test server at a scratch DB (`BRAINCONNECT_DB`), never at the live
+> one: `Repo.open` migrates whatever DB it resolves, on every request.
 
 ---
 
 ## Use it in 5 minutes
 The loop is: **stand it up → capture sources → let the librarian draft facts →
-you approve → your agents recall.** The `wiki` command is the tool; the
-**librarian** (`wiki-librarian`, a separate process) is the only part that uses a
+you approve → your agents recall.** The `brainconnect` command is the tool; the
+**librarian** (`brainconnect-librarian`, a separate process) is the only part that uses a
 model, and it only ever **drafts and proposes** — you keep the promote/approve gates.
 
-**1. Install the CLI** (installs both `wiki` and `wiki-librarian`):
+**1. Install the CLI** (installs both `brainconnect` and `brainconnect-librarian`):
 ```powershell
 # PowerShell (Windows) — from the repo root
 Copy-Item config.example.toml config.toml
@@ -163,34 +174,34 @@ model    = "qwen3:14b"                     # a model you've pulled
 
 **3. Create the DB and scaffold dirs:**
 ```bash
-wiki init          # or .venv/bin/wiki init  ·  .\wiki init (Win)  ·  ./wiki.sh init
+brainconnect init          # or .venv/bin/brainconnect init  ·  .\brainconnect init (Win)  ·  ./brainconnect.sh init
 ```
 
 **4. Capture something** (every source enters `pending`, behind the human gate):
 ```bash
-wiki capture --origin me "TIL: HTTP caches key on the request, not the response"
-wiki add https://example.com/article --origin clip      # a URL or bookmark
+brainconnect capture --origin me "TIL: HTTP caches key on the request, not the response"
+brainconnect add https://example.com/article --origin clip      # a URL or bookmark
 ```
 
 **5. Run the one-command judgment cycle:**
 ```bash
-wiki-librarian status      # confirm the endpoint is reachable + see the backlog
-wiki-librarian maintain    # catch-up → triage → adjudicate → synthesize, then render/digest/lint/health
+brainconnect-librarian status      # confirm the endpoint is reachable + see the backlog
+brainconnect-librarian maintain    # catch-up → triage → adjudicate → synthesize, then render/digest/lint/health
 ```
 `maintain` extracts every pending source, auto-gates the easy tier, and drafts
 recommendations for the rest — then tells you exactly **what needs you**:
 ```
 What needs YOU (human gates — the librarian only drafts/proposes):
-  * review + promote/reject held claims:            wiki triage
-  * resolve contradictions / close escalations:     wiki contradiction list, wiki escalation list
-  * approve skill drafts:                            wiki skill list --status draft
+  * review + promote/reject held claims:            brainconnect triage
+  * resolve contradictions / close escalations:     brainconnect contradiction list, brainconnect escalation list
+  * approve skill drafts:                            brainconnect skill list --status draft
 ```
 
 **6. Act on the gates and browse:**
 ```bash
-wiki triage list --recommendation promote   # the claims it suggests promoting
-wiki promote 14 19 ; wiki reject 22          # you decide — the gate is yours
-wiki render                                  # rebuild pages from the DB
+brainconnect triage list --recommendation promote   # the claims it suggests promoting
+brainconnect promote 14 19 ; brainconnect reject 22          # you decide — the gate is yours
+brainconnect render                                  # rebuild pages from the DB
 ```
 Open the `wiki/` folder as an **Obsidian vault** to browse (graph view works via
 `[[wikilinks]]`).
@@ -199,9 +210,9 @@ Open the `wiki/` folder as an **Obsidian vault** to browse (graph view works via
 agent/harness can **recall** the facts you've trusted and **capture** new ones
 (which land pending, behind the same gate):
 ```bash
-wiki mcp info               # prints the client-config JSON to paste into your harness
-wiki mcp serve              # the stdio server your MCP client launches
-wiki mcp serve --read-only  # recall only — omit the brain_capture write tool
+brainconnect mcp info               # prints the client-config JSON to paste into your harness
+brainconnect mcp serve              # the stdio server your MCP client launches
+brainconnect mcp serve --read-only  # recall only — omit the brain_capture write tool
 ```
 Your agents now call `brain_recall` (a context pack of trusted facts) and
 `brain_capture` (a proposed fact for you to review). That's the whole loop:
@@ -210,7 +221,7 @@ below is depth on each piece.
 
 > **The full librarian surface:** `extract` (one source), `catch-up` (drain the
 > backlog), `triage`, `adjudicate`, `synthesize`, `maintain` (all of them at
-> once), `watch` (a drop-folder loop), `status`. Run `wiki-librarian <cmd>
+> once), `watch` (a drop-folder loop), `status`. Run `brainconnect-librarian <cmd>
 > --help` for any of them.
 
 ## Choosing a model
@@ -226,7 +237,7 @@ Set `base_url`/`model` in `[librarian]` and leave `api_key_env = ""`.
 
 **Hosted OpenAI-compatible (OpenRouter, DeepSeek, OpenAI, Anthropic's compat
 endpoint).** Put the key in an **environment variable** and name it — never paste
-the key into `config.toml` (`wiki lint` scans for leaked keys):
+the key into `config.toml` (`brainconnect lint` scans for leaked keys):
 ```toml
 [librarian]
 base_url    = "https://openrouter.ai/api/v1"
@@ -245,14 +256,14 @@ triage     = "qwen3:14b"          # per-claim promote/reject/hold recommendation
 adjudicate = "deepseek/deepseek-chat"   # contradictions/escalations — hardest, lowest volume
 synthesize = "deepseek/deepseek-chat"   # page prose + skill drafts
 ```
-`wiki-librarian status` prints the resolved endpoint, per-task models, whether
+`brainconnect-librarian status` prints the resolved endpoint, per-task models, whether
 the key env var is set, and a live **reachability** check — run it first if a
 pass fails.
 
 ### Run entirely on CPU — no GPU, no API, no monthly bill
 WikiBrain is built to be **whole without calling out to a paid or remote API**.
 Many people can't run GPU models on their agent box, APIs cost money, and a leaner
-local path is simply more graceful. The `wiki` CLI is already 100% deterministic
+local path is simply more graceful. The `brainconnect` CLI is already 100% deterministic
 (ingest, gate, render, search, contradiction *detection*). The librarian is the
 only model-bearing half, and two design choices keep a **small local CPU model**
 enough for it:
@@ -264,8 +275,8 @@ enough for it:
    its own. The model is spent only on the genuinely *ambiguous residue* — so a
    4B model handles what would otherwise need a much larger one. Deterministic
    recommendations are recorded with `model = "deterministic"`, so you can always
-   see which came from a rule and which from the model in `wiki triage` /
-   `wiki contradiction list`.
+   see which came from a rule and which from the model in `brainconnect triage` /
+   `brainconnect contradiction list`.
 2. **Grammar-constrained decoding** (`json_schema = true`, on by default) forces
    schema-valid JSON on the first pass, so a small model is reliable without a
    parse-and-retry loop. Honored by llama.cpp, vLLM, and SGLang (xgrammar); it
@@ -387,11 +398,11 @@ posture — the vendor key lives on the inference box, and WikiBrain only holds 
 token *you* issue and can rotate/revoke. Switching a task between local and cloud
 is a one-line edit to `[librarian.models]` (names LiteLLM already exposes); no code
 change. You also get LiteLLM's fallback chains (local down → spill to cloud) and
-central budgets/rate-limits/logging for free. `wiki-librarian status` verifies the
+central budgets/rate-limits/logging for free. `brainconnect-librarian status` verifies the
 gateway is reachable before a pass; `network_retries` covers the hop to it.
 
 ## Design boundaries
-- The `wiki` CLI contains **zero model calls** (a billing + determinism
+- The `brainconnect` CLI contains **zero model calls** (a billing + determinism
   boundary). All judgment happens inside your agent/model session (the
   `wiki-maintainer` maintenance procedures).
 - **Key-free.** No API keys anywhere in the project; headless model children are
@@ -421,7 +432,7 @@ gateway is reachable before a pass; `network_retries` covers the hop to it.
 Copy-Item config.example.toml config.toml           # then edit paths.db etc.
 py -m venv .venv
 .venv\Scripts\python.exe -m pip install -e .\cli    # installs the CLI + trafilatura
-.venv\Scripts\wiki.exe init                          # create DB + scaffold dirs
+.venv\Scripts\brainconnect.exe init                          # create DB + scaffold dirs
 ```
 `config.toml` is git-ignored (it holds your machine-specific paths); the tracked
 `config.example.toml` is the template. The live DB lives at an absolute path
@@ -433,7 +444,7 @@ Same setup on Linux/macOS:
 cp config.example.toml config.toml            # then edit paths.db etc.
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .       # installs the CLI + trafilatura
-.venv/bin/wiki init                            # create DB + scaffold dirs
+.venv/bin/brainconnect init                            # create DB + scaffold dirs
 ```
 
 Optional extras (each guarded — the core CLI runs without them):
@@ -442,36 +453,34 @@ PDFs/images) · `[media]` (YouTube transcripts) · `[semantic]` (local-embedding
 search) · `[mcp]` (serve the brain over MCP). E.g. `pip install -e ".\cli[search,docs]"`
 (POSIX: `pip install -e "./cli[search,docs]"`).
 Run the CLI any of these ways:
-- `.venv\Scripts\wiki.exe <cmd>` (Windows) / `.venv/bin/wiki <cmd>` (POSIX) — the
+- `.venv\Scripts\brainconnect.exe <cmd>` (Windows) / `.venv/bin/brainconnect <cmd>` (POSIX) — the
   installed console script, or
-- `.\wiki <cmd>` (Windows) / `./wiki.sh <cmd>` (POSIX) from the repo root
-  (wrapper → repo venv; POSIX uses the `.sh` extension, unlike Windows'
-  `.cmd`/`.ps1`, because the repo root also holds the generated `wiki/` vault
-  — a bare `wiki` file there would collide with it), or
-- add the venv's script dir to PATH, or `pipx install ./cli` into a PATH'd Python
-  so any shell or worktree can call a bare `wiki`.
+- `.\brainconnect <cmd>` (Windows) / `./brainconnect.sh <cmd>` (POSIX) from the repo
+  root (wrapper → repo venv console script), or
+- add the venv's script dir to PATH, or `pipx install .` into a PATH'd Python
+  so any shell or worktree can call a bare `brainconnect`.
 
 ## Quick tour
 ```powershell
-.\wiki add https://example.com/article --origin clip   # one door in
-.\wiki drop                                             # ingest files from the configured folders
-.\wiki transcribe https://youtu.be/VIDEO_ID            # ingest a video's captions
-.\wiki pending                                          # what needs extraction
+.\brainconnect add https://example.com/article --origin clip   # one door in
+.\brainconnect drop                                             # ingest files from the configured folders
+.\brainconnect transcribe https://youtu.be/VIDEO_ID            # ingest a video's captions
+.\brainconnect pending                                          # what needs extraction
 # (your agent produces extraction JSON per the contract in the docs)
-.\wiki file-claims --source 1 --json extract.json
+.\brainconnect file-claims --source 1 --json extract.json
 # accepted extraction auto-files the raw artifact into raw/<bucket>/<year>/
 # and refreshes raw/INDEX.md so primary evidence remains easy to pull
-.\wiki gate                                             # auto-promote the boring tier
-.\wiki render ; .\wiki digest                          # rebuild pages + today's digest
-.\wiki search "caching" --hybrid                       # keyword + semantic (needs [semantic])
-.\wiki lint ; .\wiki health                             # self-check
-.\wiki commit "manual ingest"
+.\brainconnect gate                                             # auto-promote the boring tier
+.\brainconnect render ; .\brainconnect digest                          # rebuild pages + today's digest
+.\brainconnect search "caching" --hybrid                       # keyword + semantic (needs [semantic])
+.\brainconnect lint ; .\brainconnect health                             # self-check
+.\brainconnect commit "manual ingest"
 ```
 Open the `wiki/` folder as an Obsidian vault to browse (graph view works via
 `[[wikilinks]]`).
 
 ## Raw evidence filing
-Primary sources stay intact and retrievable. After `wiki file-claims` accepts an
+Primary sources stay intact and retrievable. After `brainconnect file-claims` accepts an
 extraction, WikiBrain verifies the source hash, moves the raw artifact out of
 flat staging into a deterministic bucket, updates `sources.path`, marks the
 source page dirty, and refreshes `raw/INDEX.md`.
@@ -484,9 +493,9 @@ index; `raw/INDEX.md` is the human/agent-friendly projection.
 
 Backfill or repair existing evidence with:
 ```powershell
-.\wiki evidence file --all        # file all processed sources + refresh index
-.\wiki evidence file --source 12  # file one source
-.\wiki evidence index             # rebuild raw/INDEX.md only
+.\brainconnect evidence file --all        # file all processed sources + refresh index
+.\brainconnect evidence file --source 12  # file one source
+.\brainconnect evidence index             # rebuild raw/INDEX.md only
 ```
 
 ## Serve the brain over MCP
@@ -496,14 +505,14 @@ tools — a harness-agnostic *query door* beside the Obsidian and skill projecti
 
 ```powershell
 pip install -e ".\cli[mcp]"
-.\wiki mcp info                     # prints the client-config JSON to paste in
-.\wiki mcp serve                    # run the stdio server (the client launches this)
-.\wiki mcp serve --read-only        # omit the brain_capture write tool
+.\brainconnect mcp info                     # prints the client-config JSON to paste in
+.\brainconnect mcp serve                    # run the stdio server (the client launches this)
+.\brainconnect mcp serve --read-only        # omit the brain_capture write tool
 ```
 Tools: `brain_search` (FTS), `brain_hybrid` (FTS+semantic), `brain_graph`,
 `brain_recall` (a context pack for the client's model to synthesize from), and
 `brain_capture` — the one write, which lands as a **pending** `session/<harness>`
-source behind the human gate, exactly like `wiki capture`. Results label promoted
+source behind the human gate, exactly like `brainconnect capture`. Results label promoted
 (vetted) vs pending (unvetted); all source text is treated as data, not instructions.
 
 ## Tests
@@ -516,7 +525,7 @@ live MCP stdio server (needs the `[mcp]` extra) are exercised separately.
 
 ## The librarian (event-driven, any model)
 The judgment half doesn't need an interactive Claude Code session or a nightly
-schedule. The **librarian** (`wiki-librarian`, installed alongside `wiki`) is a
+schedule. The **librarian** (`brainconnect-librarian`, installed alongside `brainconnect`) is a
 *separate* process — so `wiki` keeps its zero-model-call guarantee — that runs
 the judgment passes (extract, triage, adjudicate, synthesize — or all of them via
 `maintain`) against **any OpenAI-compatible endpoint**: local and key-free
@@ -532,14 +541,14 @@ base_url = "http://localhost:11434/v1"   # Ollama; or any /v1 endpoint
 model = "qwen3:14b"
 # api_key_env = "OPENROUTER_API_KEY"     # NAME of an env var, for hosted endpoints
 ```
-Now each `wiki add` / `drop` / `capture` / `transcribe` fires a detached
+Now each `brainconnect add` / `drop` / `capture` / `transcribe` fires a detached
 extraction for the new source — a clip is extracted, gated, and rendered seconds
 after it lands. No cron, no Task Scheduler, no Desktop Routines.
 ```powershell
-.\wiki capture --origin me "TIL: HTTP caching keys on the request"  # -> librarian extracts it
-wiki-librarian status        # config + how many sources are pending
-wiki-librarian catch-up      # idempotently drain any backlog (machine was off, model down)
-wiki-librarian extract --source 12   # one source on demand
+.\brainconnect capture --origin me "TIL: HTTP caching keys on the request"  # -> librarian extracts it
+brainconnect-librarian status        # config + how many sources are pending
+brainconnect-librarian catch-up      # idempotently drain any backlog (machine was off, model down)
+brainconnect-librarian extract --source 12   # one source on demand
 ```
 `catch-up` is the recovery story schedules used to provide: if the librarian was
 unreachable, sources simply stay `new` until you run it (or a session, or a
@@ -578,14 +587,14 @@ include = ["*.md", "*.txt"]
 
 **2. Pull the files in** — either on demand or continuously:
 ```bash
-wiki drop              # one-shot: scan every configured folder now
-wiki-librarian watch   # continuous: watch all folders + re-extract as files land
+brainconnect drop              # one-shot: scan every configured folder now
+brainconnect-librarian watch   # continuous: watch all folders + re-extract as files land
 ```
-`wiki drop` ingests and (with `auto_extract`) fires extraction; `watch` keeps
+`brainconnect drop` ingests and (with `auto_extract`) fires extraction; `watch` keeps
 running and reacts to new/changed files (recursively where `recursive = true`).
 
-**3. Review at the gate** as usual — everything lands `pending`; `wiki triage`,
-`wiki promote/reject`. Nothing an ingested file produces becomes trusted without you.
+**3. Review at the gate** as usual — everything lands `pending`; `brainconnect triage`,
+`brainconnect promote/reject`. Nothing an ingested file produces becomes trusted without you.
 
 **Why this is safe on real directories.** Files are **left in place by default**,
 and a global content-hash dedup means re-scanning a folder never re-ingests — so
@@ -595,33 +604,33 @@ scopes a noisy folder to just the file types you want, and the human gate is the
 backstop — together they keep a big folder from flooding the model.
 
 **Triage (advisory).** The auto-gate promotes the easy tier and holds the rest.
-`wiki-librarian triage` adds model judgment on the held claims — a
+`brainconnect-librarian triage` adds model judgment on the held claims — a
 promote/reject/hold **recommendation** with a reason per claim — but it **never
 promotes**; promotion stays the human gate. You then open a pre-sorted review
 queue and act on it:
 ```powershell
-wiki-librarian triage        # record recommendations for pending claims (uses the `triage` model)
-wiki triage                  # summary: promote/reject/hold/untriaged counts (pure code, read-only)
-wiki triage list --recommendation promote   # the claims it suggests promoting
-wiki promote 14 19 ; wiki reject 22          # you decide — the gate is still yours
+brainconnect-librarian triage        # record recommendations for pending claims (uses the `triage` model)
+brainconnect triage                  # summary: promote/reject/hold/untriaged counts (pure code, read-only)
+brainconnect triage list --recommendation promote   # the claims it suggests promoting
+brainconnect promote 14 19 ; brainconnect reject 22          # you decide — the gate is still yours
 ```
 
 **Adjudicate + synthesize (also advisory).** Two more passes round out the
 judgment half, each drafting only:
 ```powershell
-wiki-librarian adjudicate    # draft proposals for open contradictions + escalations
-wiki-librarian synthesize    # draft page prose + skill drafts for changed pages
+brainconnect-librarian adjudicate    # draft proposals for open contradictions + escalations
+brainconnect-librarian synthesize    # draft page prose + skill drafts for changed pages
 ```
 `adjudicate` writes a **proposal** onto each open contradiction/escalation but
 never resolves or closes them; `synthesize` leaves page prose and any new skill
 at `status='draft'`. The human readers/gates on the `wiki` side:
 ```powershell
-wiki contradiction list ; wiki escalation list   # read the open items + proposals
-wiki contradiction resolve <id> ; wiki escalation close <id>   # you resolve/close
-wiki skill list --status draft ; wiki skill approve <name>     # you approve
+brainconnect contradiction list ; brainconnect escalation list   # read the open items + proposals
+brainconnect contradiction resolve <id> ; brainconnect escalation close <id>   # you resolve/close
+brainconnect skill list --status draft ; brainconnect skill approve <name>     # you approve
 ```
 
-**One command for all of it.** `wiki-librarian maintain` chains catch-up →
+**One command for all of it.** `brainconnect-librarian maintain` chains catch-up →
 triage → adjudicate → synthesize, then the pure-code tail (render, digest, lint,
 health) — with a **preflight** that fails fast (naming `base_url`) if no model is
 reachable, and one bad stage never aborting the rest. It prints a "what needs
@@ -640,7 +649,7 @@ schedule. The one thing you might still want on a clock is the **zero-model**
 housekeeping — bookmarks sync, gate, render, lint, health, commit — which makes no
 model calls. Point a timer at `scripts/mechanical-maintain.ps1` (Windows) or
 `scripts/mechanical-maintain.sh` (POSIX); it commits locally and never pushes, so
-you review the diff. Add `wiki-librarian catch-up` to the same job if you want a
+you review the diff. Add `brainconnect-librarian catch-up` to the same job if you want a
 belt-and-suspenders backlog drain.
 
 **Windows Task Scheduler** — register it (runs whether or not you're logged on, no stored password):
@@ -691,7 +700,7 @@ systemctl --user enable --now wiki-brain-maintain.timer
 
 This is pure code — no agent, no model, no keys. The judgment half stays with the
 **event-driven librarian** (above); if you ever want to force a full sweep on a
-timer instead, run `wiki-librarian maintain` from the same job.
+timer instead, run `brainconnect-librarian maintain` from the same job.
 
 ## Cost & keys
 The project holds **no API keys** and the CLI makes **no model calls**, so the
@@ -707,7 +716,7 @@ Code, this is the concrete setup — and the project's original key-free, subscr
 
 **The skill.** `.claude/skills/wiki-maintainer/` holds the procedures the model
 follows: `gather.md` (night), `maintain.md` (morning / `/maintain`), `capture.md`
-(when to call `wiki capture`), `query.md` (answer from the base), and `skills.md`
+(when to call `brainconnect capture`), `query.md` (answer from the base), and `skills.md`
 (author skills from promoted truth). `CLAUDE.md` and `AGENTS.md` are thin pointers to it.
 
 **Subscription-only, no metered API** (BUILD_SPEC §1.5, §10). No API keys exist
@@ -717,14 +726,14 @@ sessions, on the subscription, never the metered API. Expect **zero Agent-SDK
 credit** drawn; if any *is*, that boundary has been crossed somewhere and is worth
 checking.
 
-**Authored skills.** `wiki skill approve` renders a skill from promoted claims to
-`.claude/skills/<name>/`; `wiki skill install` copies it to `~/.claude/skills/` so
+**Authored skills.** `brainconnect skill approve` renders a skill from promoted claims to
+`.claude/skills/<name>/`; `brainconnect skill install` copies it to `~/.claude/skills/` so
 it's active in every Claude Code session. Both are human-gated.
 
 **Live capture & MCP.** In any Claude Code session in this repo, call
-`wiki capture --origin claude-code "<finding>"` to file a durable finding (it
+`brainconnect capture --origin claude-code "<finding>"` to file a durable finding (it
 enters as pending, faces the human gate). To wire the brain into Claude Desktop
-as an MCP client, `wiki mcp info` prints the snippet for `claude_desktop_config.json`.
+as an MCP client, `brainconnect mcp info` prints the snippet for `claude_desktop_config.json`.
 
 ## Acknowledgments
 wiki-brain builds on ideas from others:
@@ -738,4 +747,4 @@ wiki-brain builds on ideas from others:
   database** as the source of truth, so the wiki becomes a generated projection.
 
 The architecture here — raw sources → SQLite (the truth) → a generated Obsidian
-wiki — is a direct take on that database-backed-wiki idea.
+brainconnect — is a direct take on that database-backed-wiki idea.

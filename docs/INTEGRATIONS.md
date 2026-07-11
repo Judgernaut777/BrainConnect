@@ -98,7 +98,7 @@ no wire plumbing — no serialisation, status codes, auth, or timeouts.
 
 > **A green integration suite means the semantics agree, not that the network path exists.**
 
-`wiki serve` closes this and is deferred. It is the only item another repository is
+`brainconnect serve` closes this — shipped 2026-07-12 (see CONTRACT.md). It was the only item another repository was
 waiting on. See [STATUS.md](STATUS.md).
 
 ---

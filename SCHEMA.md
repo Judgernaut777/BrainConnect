@@ -10,14 +10,14 @@ Stored on `sources.origin` and copied onto `claims.origin` at extraction time.
 
 | origin | meaning | gate treatment |
 |---|---|---|
-| `clip` | human-curated clip / manual `wiki add` | trusted: bypasses corroboration |
+| `clip` | human-curated clip / manual `brainconnect add` | trusted: bypasses corroboration |
 | `bookmark` | synced from a browser `wiki` folder | normal |
 | `autoresearch` | fetched by the night gather pass | machine: conf ceiling 0.9, never auto-supersedes |
 | `session/<harness>` | live capture from a session (e.g. `session/claude-code`, or `session/mcp` from a `brain_capture` MCP call) | machine: conf ceiling 0.9, never auto-supersedes |
 
 ## State machines
 - `sources.status`: `new` → `extracted` → (`failed` | `quarantined`). `new` =
-  awaiting extraction (shows in `wiki pending`). `failed` = fetch failed
+  awaiting extraction (shows in `brainconnect pending`). `failed` = fetch failed
   (counts toward health). `quarantined` = manually distrusted.
 - `claims.status`: `pending` → (`promoted` | `rejected` | `superseded` |
   `contradicted` | `archived`). Only `promoted` claims render on entity pages.
@@ -92,7 +92,7 @@ resolves them.
 `person | org | tool | concept | event | place`. A claim's `entities` (and a
 relation's `src`/`dst`) may each be given as a plain name string — kind
 defaults to `concept` — or as an object `{"name": str, "kind": str}` with an
-explicit kind from the set above. `wiki file-claims` creates new entities with
+explicit kind from the set above. `brainconnect file-claims` creates new entities with
 the given (or defaulted) kind; if an entity already exists with the default
 `concept` kind and a concrete kind arrives later, it is upgraded in place (a
 concrete kind is never downgraded back to `concept`). The maintain pass may
@@ -115,7 +115,7 @@ between `<!-- synthesis:start -->` and `<!-- synthesis:end -->`.
 ## Raw evidence filing
 `sources.path` is the canonical pointer to the immutable primary-source artifact.
 Fresh sources may begin in flat staging (`raw/` for added/fetched artifacts,
-`inbox/` for captures), but after `wiki file-claims` accepts an extraction the
+`inbox/` for captures), but after `brainconnect file-claims` accepts an extraction the
 CLI verifies `sources.hash`, moves the artifact into a deterministic bucket under
 `raw/<bucket>/<year>/`, verifies the hash again, updates `sources.path`, and
 marks the source page dirty.
@@ -131,14 +131,14 @@ Bucket rules:
 
 `raw/INDEX.md` is a generated convenience index from the `sources` table. The DB
 remains authoritative; the index is for humans and agents to quickly pull primary
-evidence by source id, bucket, path, hash, and claim counts. Use `wiki evidence
-file --all` to backfill/repair paths and `wiki evidence index` to rebuild only
+evidence by source id, bucket, path, hash, and claim counts. Use `brainconnect evidence
+file --all` to backfill/repair paths and `brainconnect evidence index` to rebuild only
 the index.
 
 ### Synthesis freshness
 `synthesis_input_hash` = sha256 of the sorted promoted-claim ids + relation ids
-feeding the page. `wiki synthesis set` stores the current hash (marking the
-prose "approved against these inputs"). On `wiki render`, if the recomputed hash
+feeding the page. `brainconnect synthesis set` stores the current hash (marking the
+prose "approved against these inputs"). On `brainconnect render`, if the recomputed hash
 differs from the stored one, the page is reported **needs synthesis review**.
 
 ## Determinism rules (renderer)
@@ -152,14 +152,14 @@ differs from the stored one, the page is reported **needs synthesis review**.
 ## Heuristics applied by code
 - **FTS recall** (`util.fts_or_query`): OR of significant tokens (stopwords and
   negation tokens dropped) retrieves candidates; precision comes from a Jaccard
-  token-overlap filter. `wiki search` instead uses AND (`util.fts_query`).
-- **Contradiction detection** (`wiki file-claims`): a new claim that retrieves a
+  token-overlap filter. `brainconnect search` instead uses AND (`util.fts_query`).
+- **Contradiction detection** (`brainconnect file-claims`): a new claim that retrieves a
   `promoted` claim with Jaccard ≥ 0.4 **and opposite polarity** (negation-token
   presence differs) opens a `contradictions` row.
-- **Corroboration** (`wiki gate`): ≥ 2 distinct source ids assert a similar fact
+- **Corroboration** (`brainconnect gate`): ≥ 2 distinct source ids assert a similar fact
   (Jaccard ≥ 0.5 among promoted+pending), or origin is `clip`.
 
-## Two-speed gate (`wiki gate`, BUILD_SPEC §7.1)
+## Two-speed gate (`brainconnect gate`, BUILD_SPEC §7.1)
 Auto-promote iff ALL: confidence ≥ `gate.auto_promote_confidence` (0.85); no open
 contradiction touching it; corroborated (above); not conflicting with a promoted
 claim. Machine-origin claims (`autoresearch`, `session/*`) are capped at
@@ -176,31 +176,31 @@ claim. Machine-origin claims (`autoresearch`, `session/*`) are capped at
   `pages.synthesis`). `input_hash` = sha256 of the sorted `promoted` linked claim
   ids + their review timestamps (the drift basis, analog of
   `synthesis_input_hash`); recomputed ≠ stored ⇒ the skill **drifted** and
-  `wiki skill check`/`audit` flags it. `skill_claims` records provenance
+  `brainconnect skill check`/`audit` flags it. `skill_claims` records provenance
   (promoted-only) and feeds the hash. `name` is a kebab-case slug = the
   `.claude/skills/` dir name; `wiki-maintainer` is reserved. Generated dirs carry a
   `.generated` marker so the renderer only ever deletes dirs it owns.
   **Versioning (Phase 6.1):** `skill_versions` is append-only — every `approve`/
   `revert` snapshots full state as the next per-skill `version`; `skills.version`
-  is the current one. `wiki skill revert --to N` restores a snapshot (recorded as a
-  new version, so history never forks). **Redundancy:** `wiki skill audit` flags
+  is the current one. `brainconnect skill revert --to N` restores a snapshot (recorded as a
+  new version, so history never forks). **Redundancy:** `brainconnect skill audit` flags
   skill pairs whose linked-claim sets or description+body text overlap (Jaccard ≥
-  0.5); `wiki skill merge` reconciles them (human-gated).
+  0.5); `brainconnect skill merge` reconciles them (human-gated).
 
 ## Librarian tables (the model-bearing half; advisory only)
 The `wiki-librarian` process writes only PROPOSALS/RECOMMENDATIONS here — never
-truth. Both are read by pure-code `wiki` readers for the human gate.
+truth. Both are read by pure-code `brainconnect` readers for the human gate.
 - `claim_triage(claim_id PK, recommendation, reason, confidence, model,
   created_at)` (schema v7) — one row per pending claim, the librarian `triage`
   pass's `promote | reject | hold` recommendation. Cascades away with the claim.
-  Surfaced by `wiki triage`; acting on it is still `wiki promote`/`wiki reject`.
+  Surfaced by `brainconnect triage`; acting on it is still `brainconnect promote`/`brainconnect reject`.
 - `escalations.proposal` (schema v8) — a nullable column added to the existing
   `escalations` table, holding the librarian `adjudicate` pass's suggested action
   for a low-confidence source, mirroring `contradictions.proposal`. The pass never
-  closes the escalation; `wiki escalation close` stays human.
+  closes the escalation; `brainconnect escalation close` stays human.
 
 ## CLI conventions
 Every mutating command commits, refreshes `db/dump.sql`, and appends a line to
 `log.md` (`## [YYYY-MM-DD HH:MM] <op> | <summary>`). Read-only commands do not.
-`wiki render`/`wiki gate`/`wiki lint` finalize only when they actually changed
+`brainconnect render`/`brainconnect gate`/`brainconnect lint` finalize only when they actually changed
 state, so no-op runs leave the tree clean.
