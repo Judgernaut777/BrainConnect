@@ -19,7 +19,7 @@ everywhere.
 | 1 | Capability registry + tier hierarchy (small → general-doc → high-capability-local → frontier-managers) + preferred-model declaration | **A** (trusted registry) + **B** (runtime tiers to AC/CC) | BC | ✅ **done** — `cli/brainconnect/registry.py` + `brainconnect registry` CLI + [REGISTRY.md](REGISTRY.md). Capability facts are ordinary claims bound to LEDGER_SPEC §7 `model_performance` + §5.5 `model:`/`worker:` scope; the tier hierarchy is a **data-driven** seed (no code branches on tier name). `Qwen3.6-35B-A3B` recorded as the *declared preferred* high-capability-local model (no numbers, not a required dependency); `qwen3-30b-a3b` as the *deployed* model. Seeding files **pending** candidates only; promotion is human/librarian-only (no auto-promote path). **No benchmark numbers.** | none (foundation) |
 | 2 | Published Decima capability-reasoning read-contract (planning/approvals/workspaces/knowledge/agents/artifacts) | **B** (surface lives in Decima) | Decima (BC consumes) | A versioned read-contract *in the Decima repo* stabilizing `projections.{tasks,approvals,agents,knowledge,activity}` with `instruction_eligible` exposed. BC codes against the contract, not Python objects. | none (parallel to L1) |
 | 3 | Transport for the registry (BC↔AC/CC memory link, `:8787`) | **A** (claim endpoint) + **B** (consumption) | BC + AC | ✅ **BC side done** — read-only `GET /registry` (+ `/registry/capabilities` alias) on the existing `:8787` server serves ONLY trusted, human-promoted capability claims (`registry.trusted_view`), bearer-authed like every other route, pending/squatted facts excluded, no fabricated numbers, deterministic. See [REGISTRY.md §6](REGISTRY.md). **AC side delegated to the AgentConnect repo:** AC's `RoutingEngine` pulls this endpoint and weights it in place of self-conferred `learned_quality` — out of scope for BC. | L1 |
-| 4 | Capability router + warm-aware swap-minimizing scheduler | **B** (fully) | AC (routing/residency) + CC (placement) | A thin BC delegation trigger that assembles a request from trusted claims + knowledge context, calls AC `RoutingEngine.route` and CC `/route/estimate`, and records the returned decision + rationale as trusted provenance. **Zero routing/placement math in BC.** | L3, L2 |
+| 4 | Capability router + warm-aware swap-minimizing scheduler | **B** (fully) | AC (routing/residency) + CC (placement) | ✅ **done** — a thin BC delegation trigger (`cli/brainconnect/delegate.py` + `delegate_clients.py`, `brainconnect delegate`, [DELEGATION.md](DELEGATION.md)) assembles a request from **trusted** registry claims + a workload, calls AC `RoutingEngine.route` and CC `/route/estimate` through injectable clients, and records the returned decision + rationale as **PENDING** decision-provenance (never auto-promoted). Deterministic no-SPOF fallback when AC/CC are down/malformed/hostile; privacy is clamped and never widened. **Zero routing/placement math in BC.** AC's decision-only HTTP endpoint is the one gap (recon): BC binds the faithful `RoutingContext -> RoutingDecision` shape via an injectable client and smokes against a fake. | L3, L2 |
 | 5 | Unified knowledge abstraction (adapters → WikiBrain → graph → OKF → external), federating Decima knowledge | **A** (core) | BC | Extend LEDGER_SPEC §8 `RetrievalBackend` federation with a Decima-knowledge backend that reads `projections/knowledge.py` via the L2 contract and honors `instruction_eligible` exactly as BC honors `trusted`. **Federate, do not fork.** | L2 |
 | 6 | Multi-model collaboration roles (planning/coding/reviewer/verifier/docs) + independent verification | **B** (fully) | AC (D executes) | BC maps a plan's role requirements to existing AC model-manager profiles (`general_coder`/`coding_specialist`/`review_worker`/`critic`) and triggers AC `RouterService` decompose→execute→synthesize with `review.*` lifecycle; BC records the role-assignment as provenance. **No role engine/verifier in BC.** | L4 |
 | 7 | Performance (prompt caching, benchmarking, telemetry, queue analytics, load prediction) feeding the registry | **B** (measurement) + **A** (capture/promote loop) | CC/AC (measure) → BC (trusted capture) | A capture adapter ingesting CC/AC telemetry + benchmark outcomes as **pending** capability candidates (never auto-promoted), closing the loop into L1. First measured run against the live `qwen3-30b-a3b` node produces the first real `model_performance` numbers (as candidates awaiting human promotion). | L1, L4 |
@@ -75,6 +75,20 @@ everywhere.
   AC-side pull + weighting is delegated to the AgentConnect repo. See
   [REGISTRY.md §6](REGISTRY.md); code in `cli/brainconnect/server.py`
   (`registry.trusted_view`).
-- **Lanes 2, 4–8:** planned. With L1 + the L3 BC transport in place, Lane 4 (the thin
-  BC delegation trigger that assembles a request from trusted claims and calls AC/CC)
-  is the next step, pending the Lane 2 Decima read-contract.
+- **Lane 4 (delegation trigger):** ✅ complete — a thin BC trigger assembles a
+  routing/placement request from **trusted** registry claims + a workload, calls
+  AgentConnect `RoutingEngine.route` and ComputeConnect `/route/estimate` through
+  injectable HTTP clients, and records the returned decision as **PENDING**
+  decision-provenance (never trusted, never self-promoted). Deterministic
+  no-single-point-of-failure fallback when either or both engines are
+  down/timing-out/malformed, and a privacy floor that BC never widens (a hostile
+  off-box decision for restricted work is refused, not obeyed). Code in
+  `cli/brainconnect/delegate.py` + `cli/brainconnect/delegate_clients.py`,
+  CLI `brainconnect delegate`, contract in [DELEGATION.md](DELEGATION.md). The one
+  cross-repo gap (recon): AgentConnect exposes no bare "decision-only" HTTP
+  endpoint yet, so BC binds the faithful `RoutingContext -> RoutingDecision`
+  shape via an injectable client and smokes against a fake — when AC ships the
+  endpoint, only the client URL changes.
+- **Lanes 2, 5–8:** planned. Lane 4 is unblocked and shipped; Lane 5 (the unified
+  knowledge abstraction federating Decima knowledge) is next, pending the Lane 2
+  Decima read-contract.

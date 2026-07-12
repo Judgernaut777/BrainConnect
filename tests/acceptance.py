@@ -4209,6 +4209,9 @@ def main():
     # ---------------- Capability registry (ADR 0008 Lane 1) ------------------
     _registry_checks()
 
+    # ---------------- Delegation trigger (ADR 0008 Lane 4) -------------------
+    _delegation_checks()
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
@@ -4505,6 +4508,308 @@ def _registry_scope_binding_checks():
           not any(row["scope_type"] == "global"
                   and "model-performance" in json.loads(row["tags"] or "[]")
                   for row in claim_rows))
+
+
+def _delegation_checks():
+    """The delegation trigger (ADR 0008 Lane 4).
+
+    BC assembles a routing/placement request from TRUSTED registry claims + a
+    workload, calls AgentConnect routing + ComputeConnect estimate through
+    injected clients, and records the returned decision as ordinary PENDING
+    provenance. Verified here: request assembled from trusted claims; a delegated
+    decision recorded as provenance (NOT trusted, NOT auto-promoted); deterministic
+    no-SPOF fallback when AC is down, when CC is down, when BOTH are down, and on
+    malformed AC/CC JSON; privacy is never widened, and a hostile response cannot
+    widen it or be recorded as trusted. Fakes honour the recon shapes; a guarded
+    live smoke is available behind BRAINCONNECT_LANE4_LIVE.
+    """
+    print("[delegate] Lane 4: assemble from trusted claims, delegate to AC+CC, "
+          "record provenance, deterministic no-SPOF fallback, never widen privacy")
+    from brainconnect import delegate as dmod
+    from brainconnect import delegate_clients as dclients
+    from brainconnect import registry as regmod, api as apimod, candidates as candmod
+    from brainconnect.db import Repo
+
+    droot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-lane4-")))
+    # Seed the registry and PROMOTE the preferred high-capability-local model so
+    # there is exactly one TRUSTED capability claim to assemble from.
+    with Repo.open(start=droot) as r:
+        regmod.seed(r)
+        snap = regmod.snapshot(r)
+        hcl = next(t for t in snap["tiers"] if t["tier"] == "high-capability-local")
+        pref_ref = hcl["preferred_model"]["ref"]
+        apimod.promote(r, pref_ref, reviewer="matthew", confidence="high",
+                       scope="model:Qwen3.6-35B-A3B", reviewer_type="human")
+
+    # -- in-process fakes honouring the recon shapes -----------------------------
+    class FakeAC:
+        """Records the context it saw; returns a valid on-box RoutingDecision."""
+        def __init__(self):
+            self.seen = None
+        def route(self, ctx):
+            self.seen = ctx
+            return {"task_id": ctx["task_id"],
+                    "decision": "route_to_local_resident_model",
+                    "selected_provider": "local-node-1",
+                    "selected_model": ctx.get("require_exact_model") or "qwen3-30b-a3b",
+                    "rejected_options": [], "policy_version": "v1",
+                    "scores": [{"provider": "local-node-1", "model": "qwen3-30b-a3b",
+                                "total": 0.9, "terms": {"capability_overlap": 1.0}}]}
+
+    class FakeCC:
+        def __init__(self):
+            self.seen = None
+            self.header = None
+        def estimate(self, body, *, privacy_header=None):
+            self.seen = body
+            self.header = privacy_header
+            return {"eligible": True, "selected_model": body.get("model") or "qwen3-30b-a3b",
+                    "runtime": "llama.cpp", "loaded": True,
+                    "estimated_queue_seconds": 0.0, "estimated_tokens_per_second": 40.0,
+                    "estimated_quality": 0.8,
+                    "reason": {"provider_id": "wiki-llama", "placement_class": "local_resident",
+                               "model": "qwen3-30b-a3b"}}
+
+    class DownAC:
+        def route(self, ctx):
+            raise dclients.DelegationClientError(dclients.AGENTCONNECT, "connection refused")
+
+    class DownCC:
+        def estimate(self, body, *, privacy_header=None):
+            raise dclients.DelegationClientError(dclients.COMPUTECONNECT, "timed out")
+
+    class MalformedAC:
+        def route(self, ctx):
+            return {"garbage": True, "decision": "teleport_to_moon"}  # not in vocab
+
+    class MalformedCC:
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": "yes-ish", "oops": None}  # eligible not a bool
+
+    class HostileWidenAC:
+        """A response that would push privacy-restricted work off-box."""
+        def route(self, ctx):
+            return {"task_id": ctx["task_id"], "decision": "route_to_cloud_provider",
+                    "selected_provider": "openai", "selected_model": "gpt-4o",
+                    "rejected_options": [], "scores": [], "policy_version": "v1"}
+
+    # -- assembly: request built from TRUSTED claims + workload ------------------
+    ac, cc = FakeAC(), FakeCC()
+    wl = {"task_id": "task-assemble", "capability_class": "high-capability-local",
+          "privacy_tier": "repo_sensitive", "est_input_tokens": 1200,
+          "est_output_tokens": 400, "pin_registry_model": True,
+          "extra_capabilities": ("tool-use",)}
+    with Repo.open(start=droot) as r:
+        res = dmod.delegate(r, wl, routing_client=ac, estimate_client=cc)
+    req = res.request
+    check("delegate: needed_capabilities are assembled from the trusted tier's "
+          "structural capabilities (code/reasoning/tool-use/long-context)",
+          set(["code", "reasoning", "tool-use", "long-context"])
+          <= set(req["agentconnect_context"]["needed_capabilities"]))
+    check("delegate: the pinned model is the TRUSTED, human-promoted registry model "
+          "(assembled from a trusted claim only)",
+          req["pinned_model"] == "Qwen3.6-35B-A3B"
+          and req["trusted_model"] == "Qwen3.6-35B-A3B"
+          and req["computeconnect_body"]["model"] == "Qwen3.6-35B-A3B"
+          and ac.seen["require_exact_model"] == "Qwen3.6-35B-A3B")
+    check("delegate: the workload sizing/priority flow into both engine requests",
+          req["agentconnect_context"]["est_input_tokens"] == 1200
+          and req["computeconnect_body"]["context_tokens"] == 1200
+          and req["computeconnect_body"]["max_output_tokens"] == 400)
+
+    # -- a delegated decision is recorded as PENDING provenance, NOT trusted -----
+    check("delegate: a successful delegation reports outcome_class=delegated",
+          res.delegated is True and res.outcome_class == "delegated"
+          and res.routing_decision["decision"] == "route_to_local_resident_model"
+          and res.placement_estimate["eligible"] is True)
+    check("delegate: the CC privacy header equals the body tier (can only confirm "
+          "the floor, never widen it)",
+          cc.header == "repo_sensitive" and cc.seen["privacy_tier"] == "repo_sensitive")
+    with Repo.open(start=droot) as r:
+        prov = candmod.get(r, refsmod.parse(res.provenance_ref, refsmod.CANDIDATE))
+        n_claims_before = r.one("SELECT COUNT(*) n FROM claims")["n"]
+    check("delegate: the decision is recorded as a PENDING candidate (provenance), "
+          "never a trusted/promoted claim",
+          prov["status"] == "pending"
+          and prov["metadata"].get("provenance_only") is True
+          and prov["metadata"].get("trusted") is False
+          and "orchestration-decision" in prov["tags"])
+    check("delegate: recording provenance auto-promoted NOTHING (no new claims)",
+          n_claims_before == 1)  # only the earlier human-promoted preferred model
+    check("delegate: the recorded decision metadata carries the full AC decision + "
+          "CC estimate for later explainability",
+          prov["metadata"]["decision"]["routing_decision"]["decision"]
+          == "route_to_local_resident_model"
+          and prov["metadata"]["decision"]["placement_estimate"]["eligible"] is True)
+
+    # -- deterministic no-SPOF fallback: AC down --------------------------------
+    with Repo.open(start=droot) as r:
+        r_ac_down = dmod.delegate(r, {"task_id": "task-ac-down",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=DownAC(), estimate_client=FakeCC())
+    check("delegate: AC down -> deterministic FALLBACK (defer), does not crash, "
+          "reason names agentconnect",
+          r_ac_down.fallback is True and r_ac_down.outcome_class == "deferred"
+          and "agentconnect" in r_ac_down.fallback_reason
+          and r_ac_down.provenance_ref is not None)
+
+    # -- CC down ----------------------------------------------------------------
+    with Repo.open(start=droot) as r:
+        r_cc_down = dmod.delegate(r, {"task_id": "task-cc-down",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=FakeAC(), estimate_client=DownCC())
+    check("delegate: CC down -> deterministic FALLBACK (defer), does not crash, "
+          "reason names computeconnect",
+          r_cc_down.fallback is True and r_cc_down.outcome_class == "deferred"
+          and "computeconnect" in r_cc_down.fallback_reason)
+
+    # -- BOTH down: BC still fully functions ------------------------------------
+    with Repo.open(start=droot) as r:
+        r_both = dmod.delegate(r, {"task_id": "task-both-down",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=None, estimate_client=None)
+    check("delegate: BOTH engines unavailable -> BC still returns a safe deferred "
+          "decision and records it (no single point of failure)",
+          r_both.fallback is True and r_both.outcome_class == "deferred"
+          and r_both.delegated is False and r_both.provenance_ref is not None
+          and r_both.routing_decision is None and r_both.placement_estimate is None)
+
+    # -- malformed AC/CC JSON -> fallback, no crash -----------------------------
+    with Repo.open(start=droot) as r:
+        r_mal_ac = dmod.delegate(r, {"task_id": "task-mal-ac",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=MalformedAC(), estimate_client=FakeCC())
+        r_mal_cc = dmod.delegate(r, {"task_id": "task-mal-cc",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=FakeAC(), estimate_client=MalformedCC())
+    check("delegate: a malformed AC RoutingDecision (unknown decision value) is "
+          "rejected as unusable -> deterministic fallback, no crash",
+          r_mal_ac.fallback is True and "malformed" in " ".join(r_mal_ac.errors))
+    check("delegate: a malformed CC estimate (eligible not a bool) is rejected as "
+          "unusable -> deterministic fallback, no crash",
+          r_mal_cc.fallback is True and "malformed" in " ".join(r_mal_cc.errors))
+
+    # -- privacy is NEVER widened (clamp + fail-closed) -------------------------
+    with Repo.open(start=droot) as r:
+        # An unknown/garbage tier must fail CLOSED to the most restrictive tier.
+        r_garbage = dmod.delegate(r, {"task_id": "task-garbage-priv",
+            "capability_class": "high-capability-local", "privacy_tier": "totally-made-up",
+            "allow_external": True, "allow_paid": True, "allow_rented": True},
+            routing_client=FakeAC(), estimate_client=FakeCC())
+    gpriv = r_garbage.privacy
+    gctx = r_garbage.request["agentconnect_context"]
+    check("delegate: an unknown privacy tier fails CLOSED to secret_sensitive "
+          "(assumed), never widened",
+          gpriv["effective"] == "secret_sensitive" and gpriv["assumed"] is True
+          and gpriv["cloud_permitted"] is False)
+    check("delegate: even when the WORKLOAD asks to allow external/paid/rented, a "
+          "non-cloud-permitting privacy floor forces all off-box flags to False "
+          "(BC only ANDs, never widens)",
+          gctx["allow_external"] is False and gctx["allow_paid"] is False
+          and gctx["allow_rented"] is False and gctx["cloud_safe"] is False
+          and r_garbage.request["computeconnect_body"]["privacy_tier"] == "secret_sensitive")
+    # A public workload MAY leave the box only if the caller also allows it.
+    with Repo.open(start=droot) as r:
+        r_pub = dmod.delegate(r, {"task_id": "task-public",
+            "capability_class": "high-capability-local", "privacy_tier": "public",
+            "allow_external": True}, routing_client=FakeAC(), estimate_client=FakeCC())
+    check("delegate: a public workload is cloud-permitted and the caller's "
+          "allow_external ceiling is honoured (not widened beyond it: allow_paid "
+          "stays False because the caller did not ask for it)",
+          r_pub.privacy["cloud_permitted"] is True
+          and r_pub.request["agentconnect_context"]["allow_external"] is True
+          and r_pub.request["agentconnect_context"]["allow_paid"] is False)
+    check("delegate: the canonical->AgentConnect privacy_class map never widens "
+          "(public->public, repo_sensitive->repo_sensitive, secret_sensitive->"
+          "secret_sensitive, and local_only rounds to restricted)",
+          dmod._AC_PRIVACY_CLASS["public"] == "public"
+          and dmod._AC_PRIVACY_CLASS["repo_sensitive"] == "repo_sensitive"
+          and dmod._AC_PRIVACY_CLASS["secret_sensitive"] == "secret_sensitive"
+          and dmod._AC_PRIVACY_CLASS["local_only"] == "restricted")
+
+    # -- a HOSTILE response cannot widen privacy or be recorded as trusted -------
+    with Repo.open(start=droot) as r:
+        r_hostile = dmod.delegate(r, {"task_id": "task-hostile",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=HostileWidenAC(), estimate_client=FakeCC())
+        hostile_prov = candmod.get(
+            r, refsmod.parse(r_hostile.provenance_ref, refsmod.CANDIDATE))
+    check("delegate: an AC response that would place repo_sensitive work off-box "
+          "(route_to_cloud_provider) is REFUSED, not obeyed -> safe fallback",
+          r_hostile.fallback is True and r_hostile.delegated is False
+          and r_hostile.rejected_decision is not None
+          and r_hostile.rejected_decision["decision"] == "route_to_cloud_provider")
+    check("delegate: the refused hostile decision is recorded ONLY as PENDING "
+          "provenance (never trusted, never promoted)",
+          hostile_prov["status"] == "pending"
+          and hostile_prov["metadata"].get("trusted") is False)
+
+    # -- determinism: same inputs -> same decision content -----------------------
+    with Repo.open(start=droot) as r:
+        d1 = dmod.delegate(r, {"task_id": "task-det",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=FakeAC(), estimate_client=FakeCC(), record=False)
+        d2 = dmod.delegate(r, {"task_id": "task-det",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=FakeAC(), estimate_client=FakeCC(), record=False)
+    check("delegate: the decision is deterministic (two runs on identical inputs "
+          "produce byte-identical decisions)",
+          json.dumps(d1.as_dict(), sort_keys=True)
+          == json.dumps(d2.as_dict(), sort_keys=True))
+
+    # -- a malformed workload is a caller error (DelegateError), not a crash ------
+    with Repo.open(start=droot) as r:
+        check("delegate: a workload missing task_id raises DelegateError (caller "
+              "error), distinct from an engine outage",
+              _raises(dmod.DelegateError, dmod.delegate, r,
+                      {"capability_class": "high-capability-local"},
+                      routing_client=FakeAC(), estimate_client=FakeCC()))
+
+    # -- CLI surface: `brainconnect delegate ... --json` (no engines -> fallback) -
+    from brainconnect import cli as _cli
+
+    def _exit(argv):
+        try:
+            _cli.main(argv)
+            return 0
+        except SystemExit as e:
+            return e.code or 0
+
+    _prev = os.getcwd()
+    os.chdir(droot)
+    _out = Path(droot) / "delegate.json"
+    try:
+        import contextlib as _ctx
+        with open(_out, "w", encoding="utf-8") as fh, _ctx.redirect_stdout(fh):
+            code = _exit(["delegate", "task-cli", "high-capability-local",
+                          "--privacy-tier", "repo_sensitive", "--json"])
+    finally:
+        os.chdir(_prev)
+    cli_doc = json.loads(_out.read_text(encoding="utf-8")) if _out.is_file() else {}
+    check("delegate CLI: `delegate <task> <tier> --json` with no engine URLs "
+          "configured exits 0 and returns a deterministic fallback decision",
+          code == 0 and cli_doc.get("fallback") is True
+          and cli_doc.get("outcome_class") == "deferred"
+          and cli_doc.get("privacy", {}).get("effective") == "repo_sensitive")
+
+    # -- guarded LIVE smoke against a real AC/CC (skipped by default) -------------
+    _live = os.environ.get("BRAINCONNECT_LANE4_LIVE", "").strip()
+    if _live:
+        ac_url = os.environ.get("BRAINCONNECT_AC_URL", "").strip()
+        cc_url = os.environ.get("BRAINCONNECT_CC_URL", "").strip()
+        rc = (dclients.HttpRoutingClient(ac_url) if ac_url else None)
+        ec = (dclients.HttpEstimateClient(cc_url) if cc_url else None)
+        with Repo.open(start=droot) as r:
+            live = dmod.delegate(r, {"task_id": "task-live",
+                "capability_class": "high-capability-local", "privacy_tier": "public"},
+                routing_client=rc, estimate_client=ec)
+        check("delegate LIVE: a real AC/CC round-trip returns a recorded decision "
+              "(delegated or safe fallback), never a crash",
+              live.provenance_ref is not None
+              and live.outcome_class in ("delegated", "deferred"))
+    else:
+        check("delegate LIVE smoke skipped (set BRAINCONNECT_LANE4_LIVE + "
+              "BRAINCONNECT_AC_URL/BRAINCONNECT_CC_URL to run it)", True)
 
 
 def _promote_registry(root, ref, reviewer_type):

@@ -22,6 +22,8 @@ from . import (api as apimod, backends, candidates as candmod,
                safety as safetymod, scopes as scopesmod)
 from . import server as servermod
 from . import backup as backupmod
+from . import delegate as delegatemod
+from . import delegate_clients as delegateclients
 
 # Ledger errors that are a user mistake at the terminal, not a bug: print the
 # message and exit non-zero rather than dumping a traceback.
@@ -1214,6 +1216,68 @@ def cmd_restore(args):
               "(restore it to roll forward)")
 
 
+def cmd_delegate(args):
+    """The Lane-4 delegation trigger: assemble from trusted claims + workload,
+    call AgentConnect routing + ComputeConnect estimate, record the decision as
+    PENDING provenance. Zero routing/placement math here (ADR 0008)."""
+    workload = {
+        "task_id": args.task_id,
+        "capability_class": args.capability_class,
+        "privacy_tier": args.privacy_tier,
+        "est_input_tokens": args.input_tokens,
+        "est_output_tokens": args.output_tokens,
+        "priority": args.priority,
+        "quality": args.quality,
+        "latency_preference": args.latency,
+        "allow_external": args.allow_external,
+        "allow_paid": args.allow_paid,
+        "allow_rented": args.allow_rented,
+        "pin_registry_model": args.pin_registry_model,
+    }
+    if args.capability:
+        workload["extra_capabilities"] = tuple(args.capability)
+    # Build HTTP clients only for engines whose URL is configured; an absent URL
+    # means "unavailable" and yields the deterministic fallback, never a crash.
+    routing_client = (
+        delegateclients.HttpRoutingClient(args.ac_url, token=args.ac_token or None)
+        if args.ac_url else None)
+    estimate_client = (
+        delegateclients.HttpEstimateClient(args.cc_url, token=args.cc_token or None)
+        if args.cc_url else None)
+    with Repo.open() as repo:
+        try:
+            result = delegatemod.delegate(
+                repo, workload, routing_client=routing_client,
+                estimate_client=estimate_client, record=not args.no_record,
+                proposed_by=args.by, proposed_by_type=args.by_type)
+        except delegatemod.DelegateError as e:
+            sys.exit(f"error: {e}")
+        out = result.as_dict()
+        out["provenance_ref"] = result.provenance_ref
+    if _emit(out, args.json):
+        return
+    print(f"task {result.task_id}: {result.outcome_class} "
+          f"({'delegated' if result.delegated else 'FALLBACK'})")
+    print(f"  privacy floor : {result.privacy['effective']} "
+          f"(cloud_permitted={result.privacy['cloud_permitted']}, "
+          f"assumed={result.privacy['assumed']})")
+    if result.delegated:
+        rd = result.routing_decision or {}
+        print(f"  AC decision   : {rd.get('decision')} "
+              f"provider={rd.get('selected_provider')} model={rd.get('selected_model')}")
+        est = result.placement_estimate or {}
+        print(f"  CC estimate   : eligible={est.get('eligible')} "
+              f"model={est.get('selected_model')} runtime={est.get('runtime')}")
+    else:
+        print(f"  fallback      : {result.fallback_reason}")
+        if result.rejected_decision is not None:
+            print(f"  refused       : {result.rejected_decision.get('decision')} "
+                  "(would widen privacy)")
+    if result.provenance_ref:
+        print(f"  provenance    : {result.provenance_ref} (PENDING; not trusted, "
+              "not auto-promoted)")
+
+
 def cmd_serve(args):
     token = (args.token or os.environ.get(servermod.TOKEN_ENV_VAR, "")).strip() or None
     try:
@@ -1477,6 +1541,46 @@ def build_parser() -> argparse.ArgumentParser:
                      help="proposer type (a proposer, never a promoter)")
     addj(rgs); rgs.set_defaults(func=cmd_registry)
     addj(srg); srg.set_defaults(func=cmd_registry, rcmd=None)
+
+    # delegate: the Lane-4 delegation trigger (ADR 0008). Assembles a request from
+    # trusted registry claims + a workload, calls AC routing + CC estimate, and
+    # records the decision as PENDING provenance. No routing/placement math in BC.
+    sdg = sub.add_parser(
+        "delegate",
+        help="assemble a routing/placement request from trusted claims + a "
+             "workload, call AgentConnect + ComputeConnect, record the decision "
+             "as provenance (ADR 0008 Lane 4)")
+    sdg.add_argument("task_id")
+    sdg.add_argument("capability_class",
+                     help="a registry tier name (e.g. high-capability-local)")
+    sdg.add_argument("--privacy-tier", default=delegatemod.MOST_RESTRICTIVE_TIER,
+                     help="workload privacy tier (unknown/absent -> most restrictive)")
+    sdg.add_argument("--input-tokens", type=int, default=0)
+    sdg.add_argument("--output-tokens", type=int, default=0)
+    sdg.add_argument("--priority", default="normal")
+    sdg.add_argument("--quality", default="good_enough")
+    sdg.add_argument("--latency", default="normal")
+    sdg.add_argument("--capability", action="append",
+                     help="extra required capability (repeatable)")
+    sdg.add_argument("--allow-external", action="store_true",
+                     help="ceiling only; ANDed with the privacy floor (never widens)")
+    sdg.add_argument("--allow-paid", action="store_true")
+    sdg.add_argument("--allow-rented", action="store_true")
+    sdg.add_argument("--pin-registry-model", action="store_true",
+                     help="pin the tier's TRUSTED registry model as the exact model")
+    sdg.add_argument("--ac-url", default="",
+                     help="AgentConnect routing base URL (absent -> unavailable -> fallback)")
+    sdg.add_argument("--ac-token", default="")
+    sdg.add_argument("--cc-url", default="",
+                     help="ComputeConnect base URL for POST /route/estimate "
+                          "(absent -> unavailable -> fallback)")
+    sdg.add_argument("--cc-token", default="")
+    sdg.add_argument("--no-record", action="store_true",
+                     help="do not file the provenance candidate")
+    sdg.add_argument("--by", default="delegation-trigger")
+    sdg.add_argument("--by-type", dest="by_type", default="tool",
+                     choices=candmod.PROPOSER_TYPES)
+    addj(sdg); sdg.set_defaults(func=cmd_delegate)
 
     sub.add_parser("dump").set_defaults(func=cmd_dump)
 
