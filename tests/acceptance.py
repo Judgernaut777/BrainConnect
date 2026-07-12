@@ -1355,6 +1355,53 @@ def main():
         check("safety: the baseline's entropy floor rejects a placeholder",
               _bsecrets.find('password = "changemechangeme"') == []
               and _bsecrets.find('api_key = "aZ39Qm7Xp2Lk8Rf4Tb6Wc1Yd5Ne0Hg"'))
+
+        # --- PEM private-key MARKER rule (ported from AgentConnect for parity) --
+        # A bare BEGIN/END private-key delimiter — even without the base64 body —
+        # is a leak signal and must be detected + redacted. Scoped to PRIVATE KEY
+        # so CERTIFICATE / PUBLIC KEY blocks are never false-flagged.
+        def _has_pk_marker(text):
+            return any(f.rule == "private_key_marker" for f in _bsecrets.find(text))
+        _pem_pos = [
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----BEGIN EC PRIVATE KEY-----",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+            "-----BEGIN PRIVATE KEY-----",
+            "-----END RSA PRIVATE KEY-----",
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        ]
+        check("safety: the PEM marker rule detects every bare private-key "
+              "delimiter (RSA/EC/OPENSSH/ENCRYPTED/generic/PGP, BEGIN and END)",
+              all(_has_pk_marker(t) for t in _pem_pos))
+        _pem_neg = [
+            "-----BEGIN CERTIFICATE-----",
+            "-----END CERTIFICATE-----",
+            "-----BEGIN PUBLIC KEY-----",
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+            "the private key is kept in the vault",
+        ]
+        check("safety: the PEM marker rule never flags CERTIFICATE / PUBLIC KEY "
+              "or prose about a private key",
+              not any(_bsecrets.find(t) for t in _pem_neg))
+        check("safety: a whole private-key block matches both block + marker "
+              "(redactor merges the overlap)",
+              {f.rule for f in _bsecrets.find(
+                  "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n"
+                  "-----END RSA PRIVATE KEY-----")}
+              >= {"private_key_block", "private_key_marker"})
+        # end-to-end: the recall surface redacts a bare marker, leaves a cert alone
+        _pem_scan = safetymod.scan(
+            "key here -----BEGIN OPENSSH PRIVATE KEY----- oops",
+            surface="memory_recall", config=_clean_cfg)
+        check("safety: a bare PEM private-key marker is redacted on recall",
+              _pem_scan.decision is D.redact and _pem_scan.redacted
+              and "PRIVATE KEY" not in _pem_scan.text)
+        _cert_scan = safetymod.scan(
+            "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----",
+            surface="memory_recall", config=_clean_cfg)
+        check("safety: a CERTIFICATE block is not redacted as a secret",
+              not _cert_scan.has(CAT.secret))
         _r = safetymod.scan("mail alice.smith@example.com", surface="memory_recall",
                             config=_clean_cfg)
         check("safety: baseline finds an email and maps it to redaction",
@@ -4039,6 +4086,9 @@ def main():
     # ---------------- OKF export (Stage 1) -----------------------------------
     _okf_checks()
 
+    # ---------------- OKF validate (Stage 2) ---------------------------------
+    _okf_validate_checks()
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
@@ -4251,7 +4301,8 @@ def _okf_checks():
     from brainconnect.db import Repo
     from brainconnect import util as _util, scopes as _scopesmod
     from brainconnect.okf import (OKFAdapter, ExportRequest, ExportError,
-                                  OKF_VERSION, export as _okfexport)
+                                  OKF_VERSION, export as _okfexport,
+                                  ValidationResult)
     from brainconnect.okf import yamlfmt as _yamlfmt
 
     print("[okf] exporter: determinism, filtering, export-safety, no-mutation")
@@ -4349,8 +4400,12 @@ def _okf_checks():
         adapter = OKFAdapter()
         check("adapter reports format name/version",
               adapter.format_name == "okf" and adapter.format_version == OKF_VERSION)
-        check("adapter validate_bundle is deferred (Stage 2)",
-              _raises(NotImplementedError, adapter.validate_bundle, "x"))
+        _nonexistent = adapter.validate_bundle(
+            str(Path(tempfile.gettempdir()) / "okf-does-not-exist-xyz"))
+        check("adapter validate_bundle is implemented (Stage 2) and reports, "
+              "not raises, on a missing bundle",
+              isinstance(_nonexistent, ValidationResult) and not _nonexistent.ok
+              and any(e.code == "not_found" for e in _nonexistent.errors))
         check("adapter import_bundle is deferred (Stage 3)",
               _raises(NotImplementedError, adapter.import_bundle, None, "x"))
 
@@ -4503,6 +4558,304 @@ def _okf_checks():
             os.environ["BRAINCONNECT_DB"] = _saved
         if _saved_legacy is not None:
             os.environ["WIKIBRAIN_DB"] = _saved_legacy
+
+
+def _okf_validate_checks():
+    """OKF validator (Stage 2): STRUCTURAL checks + hostile-input safety.
+
+    Validity is not trust, promotion, or safety. Every hostile bundle here must be
+    rejected with a SPECIFIC structured error — and must never make the validator
+    follow a symlink out, read an unbounded file, hang, or raise. Bundles are built
+    by hand so each malformation is exact; one real Stage-1 export is also validated
+    to prove the round trip.
+    """
+    from brainconnect.db import Repo
+    from brainconnect import util as _util
+    from brainconnect.okf import (OKFAdapter, ExportRequest, validate_bundle,
+                                  ValidationLimits)
+
+    print("[okf] validator (Stage 2): structure, traversal/symlink, size, encoding")
+    adapter = OKFAdapter()
+    base = Path(tempfile.mkdtemp(prefix="wikibrain-okfval-"))
+    MARKER = "format=okf\nversion=0.1\n"
+
+    def mk(root: Path, rel: str, content, *, raw=False):
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if raw:
+            p.write_bytes(content)
+        else:
+            p.write_text(content, encoding="utf-8", newline="\n")
+
+    def claimdoc(cid, *, title="A fact", bc_extra="", top_extra="", body="Body.\n"):
+        return (
+            "---\n"
+            f'title: "{title}"\n'
+            'okf_version: "0.1"\n'
+            "brainconnect:\n"
+            f'  id: "{cid}"\n'
+            '  status: "promoted"\n'
+            '  trusted: true\n'
+            '  scope: "global"\n'
+            '  confidence: "high"\n'
+            f"{bc_extra}"
+            f"{top_extra}"
+            "---\n"
+            f"# {title}\n\n"
+            f"{body}"
+        )
+
+    def new_bundle(name, *, marker=MARKER):
+        d = base / name
+        d.mkdir(parents=True)
+        mk(d, ".okf-bundle", marker)
+        return d
+
+    def valid_bundle(name):
+        """A minimal, clean bundle: marker + two linked claims + index."""
+        d = new_bundle(name)
+        mk(d, "claims/claim_1.md", claimdoc("claim_1", title="Fact one"))
+        mk(d, "claims/claim_2.md", claimdoc("claim_2", title="Fact two"))
+        mk(d, "index.md",
+           "# Knowledge bundle\n\n- [claim_1](claims/claim_1.md)\n"
+           "- [claim_2](claims/claim_2.md)\n")
+        return d
+
+    def codes(res):
+        return {e.code for e in res.errors}
+
+    def wcodes(res):
+        return {w.code for w in res.warnings}
+
+    # -- valid minimal bundle -------------------------------------------------
+    vres = adapter.validate_bundle(str(valid_bundle("valid_min")))
+    check("okf/validate: a valid minimal bundle passes with no errors",
+          vres.ok and not vres.errors and vres.claim_count == 2)
+    check("okf/validate: a valid result carries NO trust/safety signal "
+          "(structural only)",
+          "trusted" not in vres.as_dict() and "safe" not in vres.as_dict())
+
+    # -- valid FULL bundle: a real Stage-1 export round-trips clean -----------
+    _saved = os.environ.pop("BRAINCONNECT_DB", None)
+    _saved2 = os.environ.pop("WIKIBRAIN_DB", None)
+    try:
+        rroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-okfrt-")))
+        with Repo.open(start=rroot) as r:
+            s1 = r.ex("INSERT INTO sources(hash,path,title,origin,ingested_at,"
+                      "status) VALUES('h','raw/a','T','clip',?, 'extracted')",
+                      (_util.now_iso(),)).lastrowid
+
+            def _clm(text, **k):
+                st, si = k.get("st", "global"), k.get("si", "")
+                status, sup = k.get("status", "promoted"), k.get("sup")
+                cid = r.ex(
+                    "INSERT INTO claims(text,source_id,confidence,origin,status,"
+                    "superseded_by,created_at,reviewed_at,scope_type,scope_id,tags,"
+                    "confidence_label,learned_at,promoted_by) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?, 'm')",
+                    (text, s1, 0.9, "clip", status, sup, _util.now_iso(),
+                     _util.now_iso(), st, si, '[]', "high",
+                     _util.now_iso())).lastrowid
+                r.ex("INSERT INTO claim_sources(claim_id,source_id,evidence_type,"
+                     "created_at) VALUES(?,?,'extracted',?)",
+                     (cid, s1, _util.now_iso()))
+                return cid
+
+            nw = _clm("runs py3.11", st="repo", si="app")
+            od = _clm("runs py3.9", st="repo", si="app", status="superseded", sup=nw)
+            r.ex("INSERT INTO supersessions(old_claim_id,new_claim_id,reason,"
+                 "created_at,created_by) VALUES(?,?,?,?, 'm')",
+                 (od, nw, "upgrade", _util.now_iso()))
+            xa = _clm("ttl 60", st="repo", si="app")
+            xb = _clm("ttl 300", st="repo", si="app")
+            r.ex("INSERT INTO contradictions(claim_a,claim_b,status) "
+                 "VALUES(?,?, 'open')", (xa, xb))
+            r.finalize("seed", "okf")
+        rtout = base / "roundtrip"
+        with Repo.open(start=rroot) as r:
+            adapter.export_bundle(r, ExportRequest(output_dir=str(rtout),
+                                                   include_superseded=True))
+        rt = adapter.validate_bundle(str(rtout))
+        check("okf/validate: a Stage-1 export (supersession + contradiction + "
+              "history) validates clean — structural round-trip",
+              rt.ok and not rt.errors)
+        check("okf/validate: a symmetric contradiction is NOT reported as a cycle",
+              "relationship_cycle" not in wcodes(rt))
+    finally:
+        if _saved is not None:
+            os.environ["BRAINCONNECT_DB"] = _saved
+        if _saved2 is not None:
+            os.environ["WIKIBRAIN_DB"] = _saved2
+
+    # -- missing marker -------------------------------------------------------
+    d = base / "no_marker"
+    d.mkdir()
+    mk(d, "claims/claim_1.md", claimdoc("claim_1"))
+    check("okf/validate: a bundle with no .okf-bundle marker is rejected",
+          "missing_marker" in codes(adapter.validate_bundle(str(d))))
+
+    # -- unsupported version --------------------------------------------------
+    d = new_bundle("bad_version", marker="format=okf\nversion=2.0\n")
+    mk(d, "claims/claim_1.md", claimdoc("claim_1"))
+    r_uv = adapter.validate_bundle(str(d))
+    check("okf/validate: an unsupported MAJOR version is rejected",
+          not r_uv.ok and "unsupported_version" in codes(r_uv))
+
+    # -- newer compatible MINOR: warn, not fail -------------------------------
+    d = new_bundle("newer_minor", marker="format=okf\nversion=0.99\n")
+    mk(d, "claims/claim_1.md", claimdoc("claim_1"))
+    r_nm = adapter.validate_bundle(str(d))
+    check("okf/validate: a newer compatible MINOR version WARNS but stays valid",
+          r_nm.ok and "newer_minor_version" in wcodes(r_nm))
+
+    # -- missing frontmatter --------------------------------------------------
+    d = valid_bundle("missing_front")
+    mk(d, "claims/claim_1.md", "# no frontmatter here\n\nbody\n")
+    check("okf/validate: a claim document with no frontmatter is rejected",
+          "missing_frontmatter" in codes(adapter.validate_bundle(str(d))))
+
+    # -- malformed YAML (tab in indentation) ----------------------------------
+    d = valid_bundle("malformed_yaml")
+    mk(d, "claims/claim_1.md",
+       '---\ntitle: "x"\nokf_version: "0.1"\nbrainconnect:\n\tid: "claim_1"\n---\n# x\n')
+    check("okf/validate: malformed frontmatter YAML (tab indent) is rejected",
+          "malformed_yaml" in codes(adapter.validate_bundle(str(d))))
+
+    # -- malformed frontmatter (block never terminated) -----------------------
+    d = valid_bundle("unterminated")
+    mk(d, "claims/claim_1.md", '---\ntitle: "x"\nokf_version: "0.1"\n# never closed\n')
+    check("okf/validate: an unterminated frontmatter block is rejected",
+          "malformed_frontmatter" in codes(adapter.validate_bundle(str(d))))
+
+    # -- duplicate ids --------------------------------------------------------
+    d = valid_bundle("dup_ids")
+    mk(d, "claims/claim_2.md", claimdoc("claim_1", title="dup"))  # same id as claim_1
+    r_dup = adapter.validate_bundle(str(d))
+    check("okf/validate: two documents claiming the same id are rejected",
+          not r_dup.ok and "duplicate_id" in codes(r_dup))
+
+    # -- broken relative link -------------------------------------------------
+    d = valid_bundle("broken_link")
+    mk(d, "claims/claim_1.md",
+       claimdoc("claim_1", body="See [gone](claim_999.md).\n"))
+    check("okf/validate: a relative link to a missing file is rejected",
+          "broken_link" in codes(adapter.validate_bundle(str(d))))
+
+    # -- absolute-path link ---------------------------------------------------
+    d = valid_bundle("abs_link")
+    mk(d, "claims/claim_1.md",
+       claimdoc("claim_1", body="See [x](/etc/passwd).\n"))
+    check("okf/validate: an absolute-path link is rejected",
+          "absolute_link" in codes(adapter.validate_bundle(str(d))))
+
+    # -- ../ traversal link ---------------------------------------------------
+    d = valid_bundle("trav_link")
+    mk(d, "claims/claim_1.md",
+       claimdoc("claim_1", body="See [x](../../../../etc/passwd).\n"))
+    r_tr = adapter.validate_bundle(str(d))
+    check("okf/validate: a ../ link that escapes the bundle root is rejected",
+          not r_tr.ok and "link_traversal" in codes(r_tr))
+
+    # -- symlink escape (absolute + relative), never followed -----------------
+    d = valid_bundle("symlink_abs")
+    try:
+        os.symlink("/etc/passwd", d / "claims" / "escape.md")
+        _sym_ok = True
+    except OSError:
+        _sym_ok = False
+    if _sym_ok:
+        r_sa = adapter.validate_bundle(str(d))
+        check("okf/validate: an absolute symlink out of the bundle is rejected "
+              "(target never read)",
+              not r_sa.ok and "symlink_escape" in codes(r_sa))
+        d2 = valid_bundle("symlink_rel")
+        os.symlink("../../../../etc/passwd", d2 / "claims" / "escape.md")
+        check("okf/validate: a relative symlink escaping the root is rejected",
+              "symlink_escape" in codes(adapter.validate_bundle(str(d2))))
+    else:
+        check("okf/validate: symlink-escape (skipped: no symlink support)", True)
+
+    # -- unsafe / unicode filenames -------------------------------------------
+    d = valid_bundle("unicode_ok")
+    mk(d, "notes-café-résumé.md", "# unicode filename\n\nplain body\n")
+    r_uok = adapter.validate_bundle(str(d))
+    check("okf/validate: a legitimate Unicode filename passes",
+          r_uok.ok and "unsafe_filename" not in codes(r_uok))
+    d = valid_bundle("unicode_bad")
+    mk(d, "claims/re‮port.md", claimdoc("claim_3"))  # RTL override in name
+    r_ubad = adapter.validate_bundle(str(d))
+    check("okf/validate: a filename with a bidi/zero-width control char is rejected",
+          not r_ubad.ok and "unsafe_filename" in codes(r_ubad))
+
+    # -- invalid encoding -----------------------------------------------------
+    d = valid_bundle("bad_encoding")
+    mk(d, "claims/claim_1.md", b"---\ntitle: \xff\xfe not utf-8 \x00\n---\n", raw=True)
+    check("okf/validate: a non-UTF-8 file is rejected",
+          "invalid_encoding" in codes(adapter.validate_bundle(str(d))))
+
+    # -- oversized single file ------------------------------------------------
+    d = valid_bundle("big_file")
+    mk(d, "claims/claim_1.md", claimdoc("claim_1", body="x" * 4096 + "\n"))
+    r_bf = adapter.validate_bundle(
+        str(d), ValidationLimits(max_file_bytes=256))
+    check("okf/validate: a file over the per-file cap is rejected (and not read)",
+          not r_bf.ok and "file_too_large" in codes(r_bf))
+
+    # -- oversized total bundle -----------------------------------------------
+    d = valid_bundle("big_bundle")
+    r_bb = adapter.validate_bundle(
+        str(d), ValidationLimits(max_bundle_bytes=64))
+    check("okf/validate: a bundle over the total-size cap fails closed",
+          not r_bb.ok and "bundle_too_large" in codes(r_bb))
+
+    # -- unknown extension fields: warn + preserve, do NOT fail ---------------
+    d = valid_bundle("unknown_fields")
+    mk(d, "claims/claim_1.md",
+       claimdoc("claim_1", bc_extra='  frobnicate: "x"\n', top_extra='custom_top: "y"\n'))
+    r_uf = adapter.validate_bundle(str(d))
+    check("okf/validate: unknown safe extension fields WARN and preserve, "
+          "never hard-fail",
+          r_uf.ok and "unknown_field" in wcodes(r_uf)
+          and "unknown_field" not in codes(r_uf))
+
+    # -- broken relationship (supersession target absent) ---------------------
+    d = valid_bundle("broken_rel")
+    mk(d, "claims/claim_1.md",
+       claimdoc("claim_1", bc_extra='  superseded_by: "claim_missing"\n'))
+    r_br = adapter.validate_bundle(str(d))
+    check("okf/validate: a supersession target with no document is rejected",
+          not r_br.ok and "broken_relationship" in codes(r_br))
+
+    # -- cyclic relationships: detected, reported, no hang --------------------
+    d = valid_bundle("cyclic")
+    mk(d, "claims/claim_1.md",
+       claimdoc("claim_1", bc_extra='  superseded_by: "claim_2"\n'))
+    mk(d, "claims/claim_2.md",
+       claimdoc("claim_2", bc_extra='  superseded_by: "claim_1"\n'))
+    r_cy = adapter.validate_bundle(str(d))  # must return, never hang
+    check("okf/validate: a supersession CYCLE is reported (warning) without "
+          "hanging, and is not itself fatal",
+          r_cy.ok and "relationship_cycle" in wcodes(r_cy)
+          and "broken_relationship" not in codes(r_cy))
+
+    # -- CLI exit codes: 0 on valid, non-zero on invalid ----------------------
+    from brainconnect import cli as _cli
+
+    def _exit(argv):
+        try:
+            _cli.main(argv)
+            return 0
+        except SystemExit as e:
+            return e.code or 0
+
+    good = str(valid_bundle("cli_good"))
+    bad = base / "cli_bad"
+    bad.mkdir()  # no marker -> invalid
+    check("okf/validate CLI: exit 0 on a valid bundle, non-zero on an invalid one",
+          _exit(["okf", "validate", good]) == 0
+          and _exit(["okf", "validate", str(bad)]) != 0)
+    check("okf/inspect CLI: exit 0 on a valid bundle",
+          _exit(["okf", "inspect", good]) == 0)
 
 
 if __name__ == "__main__":

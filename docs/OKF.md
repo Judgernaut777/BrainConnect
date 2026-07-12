@@ -4,8 +4,8 @@
 > of a BrainConnect ledger. It is not BrainConnect's database format, and it is not
 > a second source of truth.
 
-This document covers **Stage 1: the exporter.** Validation and import are later
-stages and are stubbed at the end of this file.
+This document covers **Stage 1 (the exporter)** and **Stage 2 (the validator).**
+Import is a later stage and is stubbed at the end of this file.
 
 ---
 
@@ -39,8 +39,8 @@ The load-bearing rule, enforced in code and asserted in the acceptance suite:
 
 This build writes and pins **OKF `0.1`**. The version is written into every
 bundle (the `.okf-bundle` marker and each document's `okf_version` frontmatter
-key). A future importer will reject an unsupported major version and warn on a
-newer compatible minor.
+key). The validator (Stage 2) rejects an unsupported **major** version and warns
+on a newer compatible **minor**, preserving unknown fields it does not recognize.
 
 ## Bundle layout
 
@@ -157,15 +157,99 @@ consistent with the recall surface.
 - **Never described as the database.** OKF is interchange + a readable projection.
   The SQLite ledger remains the source of truth.
 
-## Validation — next stage
+## Validation (Stage 2)
 
-`brainconnect okf validate ./knowledge` is **not implemented in this build**. It
-will structurally check a bundle (frontmatter, supported version, unique doc
-identity, relative-link validity, path traversal, malformed YAML, unsafe
-filenames, unsupported extension fields, broken relationships, size limits, symlink
-behavior, encoding) and return structured errors + warnings. Validity will still
-not mean trust or safety. `OKFAdapter.validate_bundle` raises `NotImplementedError`
-today.
+`brainconnect okf validate ./knowledge` structurally validates a bundle and
+returns structured errors + warnings. `brainconnect okf inspect ./knowledge`
+prints a one-screen summary (version, document/claim/source counts, ids, and any
+findings). Both exit non-zero on an invalid bundle; add `--json` for a
+machine-readable `ValidationResult`.
+
+```bash
+brainconnect okf validate ./knowledge          # human output, exit != 0 if invalid
+brainconnect okf validate ./knowledge --json    # {ok, errors[], warnings[], …}
+brainconnect okf inspect  ./knowledge           # summary + findings
+```
+
+The Python surface is `OKFAdapter().validate_bundle(path, limits=None)` →
+`ValidationResult(ok, errors[], warnings[], okf_version, document_count,
+claim_count, source_count, ids[])`. Each `ValidationIssue` carries a machine-stable
+`code`, a human `message`, and the offending bundle-relative `path`.
+
+> **Structural only. Validity is not trust.** A `ValidationResult.ok == True`
+> means the directory is a well-formed OKF bundle — *nothing* about whether its
+> claims are vouched for. The result deliberately carries **no** `trusted` or
+> `safe` field. A perfectly valid bundle can be entirely hostile; import (Stage 3)
+> is where content enters the normal candidate + safety pipeline as PENDING, and
+> only a human can promote. The validator never imports, never executes, and never
+> trusts bundle content — and a malformed or unsafe-structure bundle is **never**
+> reported `ok`.
+
+### What is checked
+
+Errors (each makes the bundle invalid):
+
+| code | meaning |
+|---|---|
+| `not_found` / `not_a_directory` | the path is missing or not a directory |
+| `missing_marker` | no `.okf-bundle` marker at the root |
+| `bad_marker` | marker is not `format=okf` / has no `version=` |
+| `bad_version` / `unsupported_version` | version is unparseable, or an unsupported MAJOR |
+| `missing_frontmatter` | a `claims/*.md` document has no YAML frontmatter |
+| `malformed_frontmatter` / `malformed_yaml` | the frontmatter block is unterminated or unparseable |
+| `missing_field` / `bad_field` | a required frontmatter field (`okf_version`, `brainconnect.id`) is absent or the wrong type |
+| `duplicate_id` | two documents claim the same `brainconnect.id` |
+| `broken_link` | a relative Markdown link does not resolve inside the bundle |
+| `absolute_link` | a link uses an absolute path |
+| `link_traversal` | a `../` link escapes the bundle root |
+| `symlink_escape` | a symlink points outside the root (it is **never followed**) |
+| `unsafe_filename` | a path component has a control / bidi / zero-width char, a separator, or a reserved name |
+| `invalid_encoding` | a file is not valid UTF-8 |
+| `file_too_large` / `bundle_too_large` | a single file, or the whole bundle, exceeds its size cap (the oversized file is **not read**) |
+| `too_many_files` / `too_deep` | the tree exceeds the entry-count / nesting caps |
+| `broken_relationship` | a `superseded_by` / `contradictions` target has no document |
+
+Warnings (reported, never fatal):
+
+| code | meaning |
+|---|---|
+| `newer_minor_version` | a newer compatible MINOR than this build writes; unknown fields are preserved |
+| `unknown_field` | an unknown top-level or `brainconnect.*` field — **preserved, not dropped** |
+| `id_filename_mismatch` | `brainconnect.id` does not match the filename stem |
+| `missing_title` | a claim document has no `title` |
+| `relationship_cycle` | a supersession cycle (contradictions are symmetric and are **not** counted) |
+| `symlink_present` | a symlink that stays inside the bundle (not followed during validation) |
+| `private_key_marker` | a bare PEM private-key delimiter appears in a document body |
+
+### Security posture (the validator is hardened against a hostile bundle)
+
+The validator assumes the bundle is adversarial and protects the host:
+
+- **Never follows a symlink out.** Symlinks are classified *lexically* with
+  `os.readlink` — the target is never resolved through the filesystem, so an
+  escaping symlink is rejected and its target is never opened.
+- **Never reads unbounded.** Every file's size is taken from its stat entry first;
+  anything over the per-file cap is flagged and skipped, and the running total is
+  bounded so an oversized bundle fails closed.
+- **Never executes or imports content.** Frontmatter is parsed by a tiny, bounded,
+  stdlib subset parser that only ever produces plain containers and scalars — there
+  is no object construction, no `eval`, no code path that imports bundle content.
+- **Resolves every path against the real root.** Traversal (`../`) and absolute
+  paths are classified lexically, so a malicious link can never make the validator
+  touch the host filesystem.
+- **Never hangs.** The directory walk is depth- and count-bounded, frontmatter
+  nesting is bounded, and relationship-cycle detection is an iterative,
+  finite-graph DFS (no recursion limit to blow, no loop to spin on).
+
+Size and count caps are configurable via `ValidationLimits` (per-file bytes, total
+bundle bytes, max files, max directory depth, max YAML nesting) and default to
+sane values (2 MiB/file, 64 MiB/bundle, 10 000 files).
+
+### Round-trip
+
+A Stage-1 export validates clean: `export okf` → `okf validate` is a structural
+round trip (asserted in the acceptance suite and demonstrated by
+`scripts/okf_validate_demo.py`, which also rejects a battery of hostile bundles).
 
 ## Import — next stage
 

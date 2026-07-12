@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 from ..db import Repo
 from .export import FORMAT_NAME, OKF_VERSION, export_bundle
 from .model import ExportRequest, ExportResult
+from .validate import ValidationResult, validate_bundle
 
 
 @runtime_checkable
@@ -57,9 +58,11 @@ class OKFAdapter:
     def export_bundle(self, repo: Repo, request: ExportRequest) -> ExportResult:
         return export_bundle(repo, request)
 
-    def validate_bundle(self, path):
-        raise NotImplementedError(
-            "OKF bundle validation is Stage 2; this build ships the exporter only")
+    def validate_bundle(self, path, limits=None) -> ValidationResult:
+        """Structurally validate a bundle. STRUCTURAL ONLY — validity is not
+        trust, promotion, or safety; a valid bundle may be entirely hostile.
+        Never mutates, imports, or executes bundle content."""
+        return validate_bundle(path, limits)
 
     def import_bundle(self, repo: Repo, path, **kw):
         raise NotImplementedError(

@@ -38,7 +38,20 @@ _PATTERNS: list[tuple[str, RiskLevel, re.Pattern]] = [
     ("stripe_secret", RiskLevel.critical,
      re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{16,}\b")),
     ("private_key_block", RiskLevel.critical,
-     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE" + r" KEY-----")),
+     re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"
+                r"[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
+    # A lone PEM private-key delimiter — the `-----BEGIN … PRIVATE KEY-----` (or
+    # `-----END …-----`) line by itself, without its matching partner. The block
+    # rule above needs BOTH delimiters, so a header whose body/footer was stripped
+    # (e.g. a claim that quotes only the opening line) would slip past it. The bare
+    # delimiter is still an unredacted signal that a private key was present, so we
+    # flag and redact it. Scoped to "PRIVATE KEY" markers, with any uppercase-word
+    # prefix (RSA / EC / OPENSSH / ENCRYPTED / PGP / generic) and the PGP `BLOCK`
+    # variant — so a CERTIFICATE or PUBLIC KEY delimiter is NEVER treated as a
+    # secret. Overlaps the block rule on a whole key and is merged by the redactor.
+    # Ported from AgentConnect's baseline scanner (same owner) for redaction parity.
+    ("private_key_marker", RiskLevel.critical,
+     re.compile(r"-----(?:BEGIN|END) (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
     ("jwt", RiskLevel.medium,
      re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
 ]

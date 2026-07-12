@@ -662,6 +662,57 @@ def cmd_export(args):
         print(f"  ! {w}")
 
 
+def cmd_okf(args):
+    """Structurally validate or summarize an OKF bundle. Reads files only.
+
+    STRUCTURAL ONLY: a clean result means the bundle is well-formed, NOT that its
+    claims are trusted, promoted, or safe. Exits non-zero on an invalid bundle.
+    """
+    from .okf import OKFAdapter, ValidationLimits
+    limits = ValidationLimits()
+    if getattr(args, "max_file_bytes", None):
+        limits.max_file_bytes = args.max_file_bytes
+    if getattr(args, "max_bundle_bytes", None):
+        limits.max_bundle_bytes = args.max_bundle_bytes
+    result = OKFAdapter().validate_bundle(args.dir, limits)
+
+    if args.ocmd == "inspect":
+        if _emit(result.as_dict(), args.json):
+            sys.exit(0 if result.ok else 1)
+        state = "VALID" if result.ok else "INVALID"
+        print(f"OKF bundle: {state} (OKF {result.okf_version or '?'})")
+        print(f"  documents: {result.document_count}  claims: {result.claim_count}"
+              f"  sources: {result.source_count}")
+        if result.ids:
+            shown = ", ".join(result.ids[:12])
+            more = "" if len(result.ids) <= 12 else f", … (+{len(result.ids) - 12})"
+            print(f"  ids: {shown}{more}")
+        print(f"  errors: {len(result.errors)}  warnings: {len(result.warnings)}")
+        for w in result.warnings:
+            loc = f" [{w.path}]" if w.path else ""
+            print(f"  ~ {w.code}: {w.message}{loc}")
+        for e in result.errors:
+            loc = f" [{e.path}]" if e.path else ""
+            print(f"  ! {e.code}: {e.message}{loc}")
+        sys.exit(0 if result.ok else 1)
+
+    # validate
+    if _emit(result.as_dict(), args.json):
+        sys.exit(0 if result.ok else 1)
+    if result.ok:
+        print(f"OKF bundle is structurally VALID (OKF {result.okf_version}). "
+              "This does NOT mean its claims are trusted, promoted, or safe.")
+    else:
+        print(f"OKF bundle is INVALID: {len(result.errors)} error(s).")
+    for w in result.warnings:
+        loc = f" [{w.path}]" if w.path else ""
+        print(f"  ~ {w.code}: {w.message}{loc}")
+    for e in result.errors:
+        loc = f" [{e.path}]" if e.path else ""
+        print(f"  ! {e.code}: {e.message}{loc}")
+    sys.exit(0 if result.ok else 1)
+
+
 def cmd_candidates(args):
     with Repo.open() as repo:
         if args.pcmd == "show":
@@ -1164,6 +1215,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help="also export superseded claims and a history log")
     addj(xokf)
     sxp.set_defaults(func=cmd_export)
+
+    # okf: structurally validate / summarize a bundle (read-only; no ledger)
+    sokf = sub.add_parser("okf", help="work with OKF bundles (validate, inspect)")
+    okfsub = sokf.add_subparsers(dest="ocmd", required=True)
+    for _name, _help in (("validate", "structurally validate an OKF bundle"),
+                         ("inspect", "summarize an OKF bundle's structure")):
+        _sp = okfsub.add_parser(_name, help=_help)
+        _sp.add_argument("dir", help="bundle directory to check")
+        _sp.add_argument("--max-file-bytes", dest="max_file_bytes", type=int,
+                         help="reject any single file larger than this")
+        _sp.add_argument("--max-bundle-bytes", dest="max_bundle_bytes", type=int,
+                         help="reject a bundle whose total size exceeds this")
+        addj(_sp)
+    sokf.set_defaults(func=cmd_okf)
 
     scl = sub.add_parser("claims", help="inspect and supersede claims")
     clsub = scl.add_subparsers(dest="ccmd", required=True)
