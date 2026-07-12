@@ -14,6 +14,7 @@ from ..db import Repo
 from .export import FORMAT_NAME, OKF_VERSION, export_bundle
 from .model import ExportRequest, ExportResult
 from .okfimport import ImportRequest, ImportResult, import_bundle
+from .roundtrip import RoundtripReport, RoundtripRequest, roundtrip
 from .validate import ValidationResult, validate_bundle
 
 
@@ -73,3 +74,13 @@ class OKFAdapter:
         Never promotes; never overwrites a canonical claim; refuses an invalid
         bundle whole (no partial import)."""
         return import_bundle(repo, request)
+
+    def roundtrip(self, repo: Repo, request: RoundtripRequest) -> RoundtripReport:
+        """Run ledger -> export -> validate -> import(FRESH DB) -> compare (Stage 4).
+
+        Read-only on `repo`; imports into a throwaway temp DB. Returns a
+        machine-readable fidelity report classifying each field as exactly-preserved
+        / mapped / intentionally-omitted / lossy / governance-only. Never claims
+        complete round-trip fidelity: trust and safety are governance-only and
+        ledger-owned (import lands PENDING, untrusted)."""
+        return roundtrip(repo, request)

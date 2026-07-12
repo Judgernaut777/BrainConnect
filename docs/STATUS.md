@@ -212,8 +212,21 @@ identical ledger state, atomically staged, and self-validated before success.
 Supports `--scope`, `--trusted-only`, and `--include-superseded`. Pins **OKF 0.1**.
 Module `cli/brainconnect/okf/`; contract in [OKF.md](OKF.md); rationale in
 [adr/0004-okf-export.md](adr/0004-okf-export.md). **OKF-valid ≠ trusted/promoted/safe.**
-Validation (Stage 2) and import (Stage 3) are declared on the adapter Protocol but
-raise `NotImplementedError` in this build.
+
+## OKF validate / import / round-trip (Stages 2–4, 2026-07-13)
+
+`brainconnect okf validate <dir>` structurally validates a bundle (STRUCTURAL ONLY,
+hostile-input safe; [adr/0005](adr/0005-okf-validate.md)). `brainconnect import okf
+<dir> --scope S` imports a bundle as **PENDING candidates** — never auto-promoted,
+never overwriting a canonical claim, every document (body **and** retained
+frontmatter) scanned through `memory_candidate` ([adr/0006](adr/0006-okf-import.md)).
+`brainconnect okf roundtrip --report FILE` runs ledger → export → validate → import
+into a **fresh** DB → compare, emitting a **machine-readable fidelity report** that
+classifies each field as exactly-preserved / mapped / intentionally-omitted / lossy /
+governance-only. It is honest: it does **not** claim complete round-trip fidelity —
+trust, promotion status, audit history, and contradiction/supersession bookkeeping
+are governance-only and ledger-owned, re-established only by human promotion
+([adr/0007](adr/0007-okf-roundtrip.md)). Demos: `scripts/okf_{validate,import,roundtrip}_demo.py`.
 
 ## Deferred work
 

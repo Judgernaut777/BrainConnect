@@ -23,6 +23,8 @@ from .adapter import KnowledgeFormatAdapter, OKFAdapter
 from .export import FORMAT_NAME, OKF_VERSION, ExportError, export_bundle
 from .model import ExportRequest, ExportResult
 from .okfimport import (DocResult, ImportRequest, ImportResult, import_bundle)
+from .roundtrip import (RoundtripReport, RoundtripRequest, roundtrip,
+                        FIELD_FIDELITY, GOVERNANCE_CONCEPTS, CLASSES)
 from .validate import (ValidationIssue, ValidationLimits, ValidationResult,
                        validate_bundle)
 
@@ -32,4 +34,6 @@ __all__ = [
     "export_bundle", "OKF_VERSION", "FORMAT_NAME",
     "validate_bundle", "ValidationResult", "ValidationIssue", "ValidationLimits",
     "import_bundle", "ImportRequest", "ImportResult", "DocResult",
+    "roundtrip", "RoundtripRequest", "RoundtripReport",
+    "FIELD_FIDELITY", "GOVERNANCE_CONCEPTS", "CLASSES",
 ]

@@ -763,6 +763,53 @@ def cmd_okf(args):
     sys.exit(0 if result.ok else 1)
 
 
+def cmd_okf_roundtrip(args):
+    """Run the full OKF cycle and emit a machine-readable fidelity report.
+
+    ledger -> export -> validate -> import into a FRESH DB -> compare. Read-only on
+    the live ledger (export never mutates it); the import side is a throwaway temp
+    DB, so the live database is never written. The report classifies each field as
+    exactly-preserved / mapped / intentionally-omitted / lossy / governance-only and
+    is honest that trust + safety are governance-only and ledger-owned.
+    """
+    from .okf import OKFAdapter, RoundtripRequest
+    try:
+        scope_list = [scopesmod.parse(s) for s in (args.scope or [])]
+        import_scope = scopesmod.parse(args.import_scope)
+    except _LEDGER_ERRORS as e:
+        sys.exit(f"error: {e}")
+    by = args.by or _whoami()
+    with Repo.open() as repo:
+        try:
+            report = OKFAdapter().roundtrip(repo, RoundtripRequest(
+                report_path=args.report, scopes=scope_list,
+                trusted_only=args.trusted_only,
+                include_superseded=args.include_superseded,
+                import_scope=import_scope, imported_by=by))
+        except _LEDGER_ERRORS as e:
+            sys.exit(f"error: {e}")
+    if _emit(report.as_dict(), args.json):
+        return
+    print(f"OKF round-trip fidelity report (OKF {report.okf_version})")
+    if args.report:
+        print(f"  written to {args.report}")
+    print(f"  {report.fidelity_claim}")
+    print(f"  exported claims: {report.source.get('exported_claim_count', 0)}  "
+          f"validation: {'VALID' if report.validation.get('ok') else 'INVALID'}  "
+          f"imported (pending): {report.imported.get('created', 0)}")
+    cc = report.classification_counts
+    print("  field classification: " + ", ".join(
+        f"{k}={cc.get(k, 0)}" for k in
+        ("exactly-preserved", "mapped", "intentionally-omitted", "lossy",
+         "governance-only")))
+    h = report.honesty
+    print("  honesty: trust NOT carried="
+          f"{h.get('trust_not_carried')}  imported side untrusted/pending="
+          f"{h.get('all_imported_candidates_pending')}  "
+          f"quarantined bodies not exported={h.get('quarantined_body_not_exported')}  "
+          f"idempotent (no duplication)={h.get('no_duplication_on_repeat_import')}")
+
+
 def cmd_candidates(args):
     with Repo.open() as repo:
         if args.pcmd == "show":
@@ -1300,6 +1347,29 @@ def build_parser() -> argparse.ArgumentParser:
                          help="reject a bundle whose total size exceeds this")
         addj(_sp)
     sokf.set_defaults(func=cmd_okf)
+
+    # okf roundtrip: ledger -> export -> validate -> import(FRESH DB) -> compare,
+    # emitting a machine-readable fidelity report. Read-only on the live ledger.
+    ort = okfsub.add_parser(
+        "roundtrip",
+        help="run the full OKF cycle and emit a JSON fidelity report")
+    ort.add_argument("--report", default="",
+                     help="write the machine-readable JSON fidelity report here")
+    ort.add_argument("--scope", action="append",
+                     help="repeatable scope filter for the export leg "
+                          "(omit for every scope)")
+    ort.add_argument("--trusted-only", dest="trusted_only", action="store_true",
+                     help="round-trip only trusted claims")
+    ort.add_argument("--include-superseded", dest="include_superseded",
+                     action="store_true",
+                     help="also round-trip superseded claims + history")
+    ort.add_argument("--import-scope", dest="import_scope", default="global",
+                     help="operator scope assigned to imported candidates "
+                          "(the operator governs blast radius, not the bundle)")
+    ort.add_argument("--by", default=None,
+                     help="importing actor recorded on the fresh-DB candidates")
+    addj(ort)
+    ort.set_defaults(func=cmd_okf_roundtrip)
 
     scl = sub.add_parser("claims", help="inspect and supersede claims")
     clsub = scl.add_subparsers(dest="ccmd", required=True)

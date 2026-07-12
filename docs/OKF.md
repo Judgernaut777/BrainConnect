@@ -376,3 +376,94 @@ A runnable demonstration is `scripts/okf_import_demo.py` (scratch DB): it import
 valid bundle to pending candidates, imports a secret (redacted) and an injection
 (quarantined), re-imports idempotently, refuses an external-id overwrite of a
 promoted claim, and shows an agent-actor import still landing only pending.
+
+## Round-trip fidelity (Stage 4)
+
+Stage 4 runs the whole cycle end to end and produces a **machine-readable fidelity
+report** so that no one has to *trust* a prose claim about what survives:
+
+```bash
+# ledger -> export -> validate -> import into a FRESH DB -> compare
+brainconnect okf roundtrip --report ./fidelity.json
+brainconnect okf roundtrip --report ./fidelity.json --scope repo:my-app --json
+brainconnect okf roundtrip --report ./fidelity.json --include-superseded --trusted-only
+```
+
+The export leg is **read-only** on the live ledger; the import leg lands in a
+**throwaway temporary database**, so `roundtrip` never writes the live DB. The
+imported side is a set of **PENDING candidates** (import never auto-promotes), so
+the honest comparison is: *which of the source claims' representable fields survive
+into the imported candidates + their provenance*, and *which governance state is
+deliberately not reconstructed from a projection and remains ledger-owned.*
+
+**We do not claim complete round-trip fidelity.** OKF is a portable projection, not
+an authority. A projection cannot carry trust, promotion status, audit history, or
+contradiction/supersession bookkeeping — those are re-established only by a human
+through the normal promotion path. The report's headline says exactly this.
+
+### Fidelity classification
+
+Every mapping-table field is classified as exactly one of:
+
+| Class | Meaning |
+|---|---|
+| **exactly-preserved** | survives byte-for-byte into the imported side |
+| **mapped** | transformed but recoverable |
+| **intentionally-omitted** | not carried by design (re-derivable or safety-withheld) |
+| **lossy** | only partially represented (by design) |
+| **governance-only** | trust / promotion / audit / relationship bookkeeping — **never carried by OKF**, ledger-owned, re-established only by human promotion |
+
+| Field | Class | Why |
+|---|---|---|
+| `id` | mapped | source claim id → candidate `source_ref` `okf:<id>` + `metadata.external_id`; not re-used as a claim id (imported side is a new pending candidate) |
+| `title` | intentionally-omitted | derived from the safe body on export; not retained on import (a free-text title could smuggle a secret); re-derivable from the body |
+| `body` | exactly-preserved | a clean body imports verbatim as the candidate text. **Degrades under safety:** a redacted secret → **lossy** (masked only), a quarantined/injection body → **intentionally-omitted** (withheld, never exported) |
+| `tags` | exactly-preserved | source tags survive as a subset of the candidate tags |
+| `scope` | mapped | retained as informational metadata; the **operator's** `--import-scope` governs the candidate, never the bundle |
+| `status` | governance-only | the status string is retained as metadata, but the candidate is always PENDING; promotion status is re-established only by a human |
+| `confidence` | mapped | retained as metadata; the governing confidence is set by the reviewer at promotion |
+| `trusted` | **governance-only** | **trust is never carried.** The exported flag is informational only; the imported candidate is untrusted. OKF-valid ≠ trusted |
+| `sources` | lossy | citations are fully in the bundle but not re-attached to the pending candidate; import registers the *bundle* as provenance |
+| `valid_from` / `valid_until` | mapped | retained as safety-scanned metadata; not applied as ledger validity until promotion |
+| `learned_at` / `last_verified_at` | mapped | retained as metadata; import also stamps its own `imported_at` |
+| `superseded_by` | **governance-only** | re-imported as a provenance link (`relationships.superseded_by`), **not** a re-established supersession — no `supersessions` row, no `claims.superseded_by` |
+| `contradictions` | **governance-only** | re-imported as provenance (`relationships.contradictions`), **not** a re-established open contradiction — no `contradictions` row |
+| `provenance` | mapped | retained as safety-scanned metadata (masked if it carried a secret); import also records its *own* provenance block |
+| `safety` | **governance-only** | the exported non-sensitive safety block is informational; on import the content is **re-scanned fresh** — safety is never carried as a decision. OKF-valid ≠ safe |
+
+Concept-level governance that is **deliberately not reconstructable from a
+projection**: trust, promotion status, audit history, and contradiction /
+supersession bookkeeping. The report lists these under `governance_concepts`.
+
+### The honest edges
+
+- **A withheld (quarantined) body is never exported.** An injection / tool-control
+  body is projected as a text-free placeholder; the round-trip proves the original
+  is absent from the imported side. Classified intentionally-omitted.
+- **Redacted secrets are masked → lossy by design.** Only the masked representation
+  travels; the raw text never leaves the ledger.
+- **Superseded history travels only with `--include-superseded`** — and even then it
+  re-imports as a pending candidate + provenance, never as ledger supersession state.
+- **Contradiction and supersession become relative links + metadata**, re-imported as
+  provenance, not as re-established ledger contradiction/supersession state.
+- **Trust and safety are governance-only / ledger-owned.** Import lands PENDING and
+  untrusted; the report's `honesty.trust_not_carried` is proven on the actual ledger
+  (no canonical claims created, every candidate pending).
+- **Idempotent.** A repeat round-trip creates no new candidates (proven in the report
+  as `no_duplication_on_repeat_import`).
+
+### The report
+
+`RoundtripReport` (also emitted as pretty JSON to `--report FILE`) carries:
+`fidelity_claim` (the honest "PARTIAL BY DESIGN" headline), `source` / `export` /
+`validation` / `imported` summaries, `field_fidelity` (the table above),
+`governance_concepts`, `classification_counts`, a data-driven `honesty` block, and
+`per_claim` evidence (each exported claim's body class + whether its original body
+survived + its governance proofs). No raw secret or injection value ever appears in
+the report — only finding *kinds*.
+
+A runnable demonstration is `scripts/okf_roundtrip_demo.py` (scratch DB): it seeds a
+rich ledger (promoted / pending / superseded / contradicted / redacted-secret /
+withheld-injection across scopes), runs the full cycle, and prints the report plus
+the key honesty facts — trust not carried, quarantined body not exported, secret
+masked, contradiction/supersession not re-established, no duplication on repeat.
