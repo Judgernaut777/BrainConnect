@@ -16,14 +16,26 @@ from . import util
 
 
 class Repo:
-    def __init__(self, config: Config, conn: sqlite3.Connection):
+    def __init__(self, config: Config, conn: sqlite3.Connection,
+                 write_projections: bool = True):
         self.cfg = config
         self.conn = conn
         self._dump_pending = False
+        # db/dump.sql and log.md are curation-workflow projections (BUILD_SPEC §2,
+        # §3.2): a git-committed textual mirror of the DB and an ops log. They are
+        # right for a human running one CLI command at a time. They are WRONG for
+        # the HTTP service: rewriting db/dump.sql (a full `iterdump` of the whole
+        # DB) on every capture/promote/feedback is an O(DB) cost per request that
+        # collapses throughput, and several server threads writing the same
+        # working-tree files is a corruption hazard the DB does not have. In
+        # service mode the ledger DB stays the sole source of truth; a human can
+        # regenerate the projections later with `brainconnect dump`.
+        self.write_projections = write_projections
 
     # --- lifecycle -----------------------------------------------------------
     @classmethod
-    def open(cls, start: Path | None = None, *, must_exist: bool = True) -> "Repo":
+    def open(cls, start: Path | None = None, *, must_exist: bool = True,
+             write_projections: bool = True) -> "Repo":
         """Open the repo's database, applying any pending forward migrations.
 
         **This mutates real state.** Migrations run on EVERY open — including the
@@ -57,7 +69,7 @@ class Repo:
         # Carry an existing DB forward if SCHEMA_VERSION has bumped since it was
         # created. No-op (a single PRAGMA read) once the DB is current.
         migrate(conn)
-        return cls(cfg, conn)
+        return cls(cfg, conn, write_projections=write_projections)
 
     def close(self):
         self.conn.close()
@@ -105,6 +117,10 @@ class Repo:
         mutation. The dump itself is deferred (see `flush`) so a command that
         finalizes many times only rewrites db/dump.sql once, on Repo exit."""
         self.conn.commit()
+        if not self.write_projections:
+            # Service mode: the DB is the whole record. Skip the O(DB) dump.sql
+            # rewrite and the shared-file log append (see __init__).
+            return
         self._dump_pending = True
         self.log(op, summary)
 

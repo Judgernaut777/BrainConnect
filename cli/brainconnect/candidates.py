@@ -271,39 +271,60 @@ def promote(repo: Repo, cid: int, *, reviewer: str, confidence: str, scope: Scop
     label = confidence
     numeric = conf.to_numeric(label)  # raises ConfidenceError on a bad label
 
-    row = _require(repo, cid)
-    _require_reviewable(row, "promote")
-    meta = _safety_gate(repo, row, reviewer=reviewer, reviewer_type=reviewer_type,
-                        override=bool(safety_override),
-                        override_reason=override_reason)
+    # Promotion is a read-check-write (is this candidate still pending? then
+    # insert a claim and mark it promoted), and BrainConnect serves it from a
+    # process pool where each request holds its own connection. Without a write
+    # lock spanning the whole sequence, two concurrent promotions of the SAME
+    # candidate both read `pending`, both insert a claim, and both commit — a
+    # double-promote that forks one candidate into two trusted claims. BEGIN
+    # IMMEDIATE takes the RESERVED lock up front (busy_timeout makes the loser
+    # wait, not fail), so the second promoter reads `promoted` and refuses. The
+    # conditional UPDATE below is the belt to this braces: even if the lock model
+    # ever changed, a candidate can transition out of `pending` exactly once.
+    repo.conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _require(repo, cid)
+        _require_reviewable(row, "promote")
+        meta = _safety_gate(repo, row, reviewer=reviewer, reviewer_type=reviewer_type,
+                            override=bool(safety_override),
+                            override_reason=override_reason)
 
-    src = repo.one("SELECT origin FROM sources WHERE id = ?", (row["source_id"],))
-    if not src:
-        raise CandidateError(
-            f"candidate {refs.candidate(cid)} has no evidence source; refusing to "
-            "promote a claim with no provenance")
-    now = util.now_iso()
-    cur = repo.ex(
-        """INSERT INTO claims
-             (text, source_id, confidence, origin, status, created_at, reviewed_at,
-              scope_type, scope_id, tags, confidence_label, learned_at,
-              last_verified_at, promoted_by, candidate_id)
-           VALUES (?,?,?,?,'promoted',?,?,?,?,?,?,?,?,?,?)""",
-        (row["text"], row["source_id"], numeric, src["origin"], now, now,
-         scope.scope_type, scope.scope_id, row["tags"], label,
-         row["created_at"], now, reviewer, cid))
-    claim_id = cur.lastrowid
-    repo.ex(
-        """INSERT INTO claim_sources
-             (claim_id, source_id, evidence_type, quote_or_pointer, created_at)
-           VALUES (?,?,?,?,?)""",
-        (claim_id, row["source_id"], PROMOTION_EVIDENCE_TYPE, row["source_ref"], now))
-    repo.ex(
-        """UPDATE memory_candidates
-              SET status='promoted', promoted_claim_id=?, reviewed_at=?,
-                  reviewed_by=?, review_reason=?, metadata=?
-            WHERE id=?""",
-        (claim_id, now, reviewer, note, json.dumps(meta, sort_keys=True), cid))
+        src = repo.one("SELECT origin FROM sources WHERE id = ?", (row["source_id"],))
+        if not src:
+            raise CandidateError(
+                f"candidate {refs.candidate(cid)} has no evidence source; refusing to "
+                "promote a claim with no provenance")
+        now = util.now_iso()
+        cur = repo.ex(
+            """INSERT INTO claims
+                 (text, source_id, confidence, origin, status, created_at, reviewed_at,
+                  scope_type, scope_id, tags, confidence_label, learned_at,
+                  last_verified_at, promoted_by, candidate_id)
+               VALUES (?,?,?,?,'promoted',?,?,?,?,?,?,?,?,?,?)""",
+            (row["text"], row["source_id"], numeric, src["origin"], now, now,
+             scope.scope_type, scope.scope_id, row["tags"], label,
+             row["created_at"], now, reviewer, cid))
+        claim_id = cur.lastrowid
+        repo.ex(
+            """INSERT INTO claim_sources
+                 (claim_id, source_id, evidence_type, quote_or_pointer, created_at)
+               VALUES (?,?,?,?,?)""",
+            (claim_id, row["source_id"], PROMOTION_EVIDENCE_TYPE, row["source_ref"], now))
+        updated = repo.ex(
+            """UPDATE memory_candidates
+                  SET status='promoted', promoted_claim_id=?, reviewed_at=?,
+                      reviewed_by=?, review_reason=?, metadata=?
+                WHERE id=? AND status='pending'""",
+            (claim_id, now, reviewer, note, json.dumps(meta, sort_keys=True), cid))
+        if updated.rowcount != 1:
+            # Another promotion won the race between our status read and this
+            # write. Abandon the claim we just inserted; the winner stands.
+            raise CandidateError(
+                f"candidate {refs.candidate(cid)} was promoted concurrently; "
+                "this promotion was rolled back so the candidate has exactly one claim")
+    except BaseException:
+        repo.conn.rollback()
+        raise
     line = (f"{refs.candidate(cid)} -> {refs.claim(claim_id)} "
             f"({scope}, {label}) by {reviewer}")
     if meta.get("safety_override"):

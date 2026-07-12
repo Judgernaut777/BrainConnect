@@ -223,7 +223,8 @@ class _Handler(BaseHTTPRequestHandler):
                 raise candidates.ReviewerNotPermitted(
                     "this server requires a bearer token (Authorization header); "
                     "the credential supplied was missing or wrong")
-            with Repo.open(self.server.repo_root) as repo:
+            with Repo.open(self.server.repo_root,
+                           write_projections=False) as repo:
                 result = handler(repo)
             self._send(200, result)
         except Exception as exc:  # noqa: BLE001 — every failure must wear the envelope
