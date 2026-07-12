@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from .config import Config
 from .db import Repo, init_db
@@ -20,6 +21,7 @@ from . import (api as apimod, backends, candidates as candmod,
                profiles as profilesmod, refs, safety as safetymod,
                scopes as scopesmod)
 from . import server as servermod
+from . import backup as backupmod
 
 # Ledger errors that are a user mistake at the terminal, not a bug: print the
 # message and exit non-zero rather than dumping a traceback.
@@ -950,6 +952,37 @@ def cmd_mcp(args):
                   + ("." if read_only else " plus brain_capture (gated write)."))
 
 
+def cmd_backup(args):
+    """WAL-safe snapshot of the ledger DB to a single file (online backup API)."""
+    with Repo.open() as repo:
+        info = backupmod.backup(repo, args.out)
+    if _emit(info, args.json):
+        return
+    print(f"backup: wrote {info['backup']} ({info['bytes']} bytes, "
+          f"integrity={info['integrity']}, schema v{info['schema_version']})")
+    print("  contents: " + ", ".join(f"{k}={v}" for k, v in info["counts"].items()))
+
+
+def cmd_restore(args):
+    """Replace the live ledger DB with a verified backup. Stop `serve` first."""
+    target = backupmod.resolve_db_path()
+    pre = args.pre_restore_out
+    if pre is None and not args.no_pre_restore:
+        pre = str(Path(str(target) + ".pre-restore"))
+    try:
+        info = backupmod.restore(args.source, target, make_pre_restore=pre)
+    except backupmod.BackupError as e:
+        sys.exit(f"error: {e}")
+    if _emit(info, args.json):
+        return
+    print(f"restore: replaced {info['restored']} from {info['from']} "
+          f"(integrity={info['integrity']}, schema v{info['schema_version']}, "
+          f"counts_match={info['counts_match']})")
+    if info.get("pre_restore_backup"):
+        print(f"  prior state snapshotted to {info['pre_restore_backup']} "
+              "(restore it to roll forward)")
+
+
 def cmd_serve(args):
     token = (args.token or os.environ.get(servermod.TOKEN_ENV_VAR, "")).strip() or None
     try:
@@ -1269,6 +1302,26 @@ def build_parser() -> argparse.ArgumentParser:
                      help="require this bearer token on every route except GET "
                           f"/health (or set {servermod.TOKEN_ENV_VAR})")
     ssv.set_defaults(func=cmd_serve)
+
+    # backup / restore: WAL-safe snapshot & recovery (docs/OPERATIONS.md)
+    sbk = sub.add_parser(
+        "backup", help="WAL-safe snapshot of the ledger DB to a single file")
+    sbk.add_argument("--out", required=True, help="destination .db path")
+    addj(sbk)
+    sbk.set_defaults(func=cmd_backup)
+
+    srs = sub.add_parser(
+        "restore",
+        help="replace the live ledger DB with a verified backup (stop serve first)")
+    srs.add_argument("--from", dest="source", required=True,
+                     help="backup .db to restore from")
+    srs.add_argument("--pre-restore-out",
+                     help="where to snapshot current state first "
+                          "(default: <db>.pre-restore)")
+    srs.add_argument("--no-pre-restore", action="store_true",
+                     help="skip snapshotting current state before overwriting it")
+    addj(srs)
+    srs.set_defaults(func=cmd_restore)
 
     smc = sub.add_parser("mcp", help="serve the brain over MCP (query door)")
     mcsub = smc.add_subparsers(dest="mcmd", required=True)
