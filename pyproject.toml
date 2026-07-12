@@ -62,8 +62,9 @@ package-dir = {"" = "cli"}
 # `packages` list, so `brainconnect.backends` was silently absent from every wheel
 # built before this line existed.
 packages = [
-    "brainconnect", "brainconnect.backends", "brainconnect.safety",
-    "brainconnect.safety.baseline", "brainconnect.safety.engines", "librarian",
+    "brainconnect", "brainconnect.backends", "brainconnect.okf",
+    "brainconnect.safety", "brainconnect.safety.baseline",
+    "brainconnect.safety.engines", "librarian",
 ]
 
 # Scoped conservatively: real-bug rules only (unused imports/names, undefined

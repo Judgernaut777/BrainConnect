@@ -634,6 +634,34 @@ def cmd_recall(args):
         print(f"  ! {w}")
 
 
+def cmd_export(args):
+    """Export the ledger as a portable OKF bundle (read-only; no ledger mutation)."""
+    from .okf import OKFAdapter, ExportRequest, ExportError
+    try:
+        scope_list = [scopesmod.parse(s) for s in (args.scope or [])]
+    except _LEDGER_ERRORS as e:
+        sys.exit(f"error: {e}")
+    # Read-only: the exporter never calls repo.finalize(), so no dump/log churn.
+    with Repo.open() as repo:
+        try:
+            result = OKFAdapter().export_bundle(repo, ExportRequest(
+                output_dir=args.output, scopes=scope_list,
+                trusted_only=args.trusted_only,
+                include_superseded=args.include_superseded))
+        except (ExportError,) + _LEDGER_ERRORS as e:
+            sys.exit(f"error: {e}")
+    if _emit(result.as_dict(), args.json):
+        return
+    print(f"exported {result.claim_count} claim(s) and {result.source_count} "
+          f"source(s) to {result.output_dir} (OKF {result.okf_version})")
+    if result.redacted:
+        print(f"  {len(result.redacted)} claim(s) masked by safety policy")
+    for w in result.withheld:
+        print(f"  ! withheld {w['id']}: {w['reason']}")
+    for w in result.warnings:
+        print(f"  ! {w}")
+
+
 def cmd_candidates(args):
     with Repo.open() as repo:
         if args.pcmd == "show":
@@ -1119,6 +1147,23 @@ def build_parser() -> argparse.ArgumentParser:
     srec.add_argument("--untrusted", action="store_true",
                       help="also admit contradicted claims")
     addj(srec); srec.set_defaults(func=cmd_recall)
+
+    # export: project the ledger into a portable OKF bundle (read-only)
+    sxp = sub.add_parser("export", help="project the ledger into a portable bundle")
+    xpsub = sxp.add_subparsers(dest="xcmd", required=True)
+    xokf = xpsub.add_parser("okf", help="Open Knowledge Format Markdown bundle")
+    xokf.add_argument("--output", required=True,
+                      help="output directory (atomically created/replaced)")
+    xokf.add_argument("--scope", action="append",
+                      help="repeatable scope filter, e.g. repo:my-app; "
+                           "omit for a global export of every scope")
+    xokf.add_argument("--trusted-only", dest="trusted_only", action="store_true",
+                      help="export only trusted claims (promoted, not contradicted)")
+    xokf.add_argument("--include-superseded", dest="include_superseded",
+                      action="store_true",
+                      help="also export superseded claims and a history log")
+    addj(xokf)
+    sxp.set_defaults(func=cmd_export)
 
     scl = sub.add_parser("claims", help="inspect and supersede claims")
     clsub = scl.add_subparsers(dest="ccmd", required=True)

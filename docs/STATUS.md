@@ -201,6 +201,20 @@ On 2026-07-12 the pass was additionally cross-checked by driving
 refusal surfacing as `MemorySafetyRefused`, trusted recall, feedback and
 `list_pending` all behaved as pinned.
 
+## OKF export (Stage 1, 2026-07-12)
+
+`brainconnect export okf --output <dir>` projects the ledger into a portable,
+human-readable **Open Knowledge Format** bundle (Markdown + YAML frontmatter). It
+is read-only — the ledger is canonical, the bundle is a projection — and applies
+the `memory_recall` safety path on the way out (secrets masked, injection withheld
+with a warning, no raw value in any file). Deterministic + byte-identical for
+identical ledger state, atomically staged, and self-validated before success.
+Supports `--scope`, `--trusted-only`, and `--include-superseded`. Pins **OKF 0.1**.
+Module `cli/brainconnect/okf/`; contract in [OKF.md](OKF.md); rationale in
+[adr/0004-okf-export.md](adr/0004-okf-export.md). **OKF-valid ≠ trusted/promoted/safe.**
+Validation (Stage 2) and import (Stage 3) are declared on the adapter Protocol but
+raise `NotImplementedError` in this build.
+
 ## Deferred work
 
 Ordered by how much each one blocks. Nothing here is started.
