@@ -1,5 +1,9 @@
+# Distribution name is `brainconnect-ai` because the plain `brainconnect` name is
+# already taken on PyPI by an unrelated neuroscience package. The IMPORT package and
+# the console command both stay `brainconnect` (a distribution name may differ from
+# what it imports) — `pip install brainconnect-ai` then `brainconnect ...`.
 [project]
-name = "brainconnect"
+name = "brainconnect-ai"
 version = "0.1.0"
 description = "BrainConnect: trusted memory ledger with a human promotion gate (pure-code CLI + HTTP service, no model calls)"
 license = "Apache-2.0"

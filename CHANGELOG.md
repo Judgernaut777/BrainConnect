@@ -21,7 +21,12 @@ entries continue below).
   is unset, so a pre-rename isolation setup keeps isolating instead of silently
   migrating a live DB.
 - Packaging moved to a root `pyproject.toml` (`pip install .` from the repo
-  root): name `brainconnect`, version `0.1.0`, `package-dir` mapping onto `cli/`.
+  root): PyPI **distribution** name `brainconnect-ai`, version `0.1.0`,
+  `package-dir` mapping onto `cli/`. The distribution is named `brainconnect-ai`
+  because the bare `brainconnect` name is owned on PyPI by an unrelated
+  neuroscience package; the **import package and both console commands stay
+  `brainconnect` / `brainconnect-librarian`**, so nothing user-facing changes —
+  only `pip install brainconnect-ai` differs from the command you then run.
 - Contract fixtures regenerated: the `service` string and one degraded-retrieval
   warning message changed; no field shapes moved.
 - **Known limitation:** the default live-DB path is still `~/.wiki-brain/wiki.db`
