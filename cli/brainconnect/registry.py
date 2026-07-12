@@ -36,19 +36,37 @@ Pure code, zero model calls.
 """
 from __future__ import annotations
 
-import json
+import warnings
 from dataclasses import dataclass
 
 from .db import Repo
 from . import candidates, refs
 from .scopes import Scope, GLOBAL
 
-# The classification tag that binds every registry fact to the `model_performance`
-# retrieval profile (LEDGER_SPEC §7). Kept as the literal substrate string rather
-# than importing a profile name: the profile filters ON this tag, it is not this
-# tag. A registry claim always also carries a stable `reg:*` key tag (below) that
-# identifies which tier/role it speaks for.
+# The classification tag that binds a *model* capability fact (preferred/deployed,
+# always `model:` scoped) to the `model_performance` retrieval profile
+# (LEDGER_SPEC §7). Kept as the literal substrate string rather than importing a
+# profile name: the profile filters ON this tag, it is not this tag.
+#
+# It is applied ONLY to model-scoped claims. §7 restricts `model_performance` to
+# `model`/`worker` scope, so a GLOBAL-scoped claim must never carry it — the
+# tier-STRUCTURE facts below are registry-structural, not model-performance, and
+# carry `REGISTRY_STRUCTURAL_TAG` instead. (Regression: no claim binds
+# `model_performance` at global scope.)
 MODEL_PERFORMANCE_TAG = "model-performance"
+
+# The classification tag for GLOBAL-scoped tier-STRUCTURE facts (ordinal, required
+# capabilities, provider binding). This metadata describes the registry's own
+# hierarchy; it is NOT a measured performance fact about any model, so it is kept
+# off the `model_performance` profile and off model scope. It is a plain registry
+# marker, distinct from the unforgeable per-fact ownership marker below.
+REGISTRY_STRUCTURAL_TAG = "registry-structural"
+
+# The metadata path the registry resolves its OWN canonical facts by. A registry
+# fact is located by this UNFORGEABLE, registry-written marker
+# (candidates.REGISTRY_CANONICAL_KEY) — NEVER by the public, squattable `reg:*`
+# tag. See `_status_for`.
+_CANON_PATH = "$." + candidates.REGISTRY_CANONICAL_KEY
 
 # Tier names — the hierarchy small -> general-doc -> high-capability-local ->
 # frontier-managers. Exposed as constants so callers (diagnostics, tests) never
@@ -61,7 +79,13 @@ FRONTIER_MANAGERS = "frontier-managers"
 # Roles a registry fact can play about a tier.
 ROLE_TIER = "tier"          # the tier-hierarchy metadata itself
 ROLE_PREFERRED = "preferred"  # the DECLARED preferred model (a recommendation)
-ROLE_DEPLOYED = "deployed"    # the currently DEPLOYED / measured model
+# ROLE_DEPLOYED is a DECLARED STATIC fact: "this is the model recorded as serving
+# the tier", editable only by changing SEED_TIERS data. It is NOT a liveness or
+# residency signal and must NEVER be wired to ComputeConnect residency / warm-state
+# or host liveness — ADR 0008 / LEDGER_SPEC §2 forbid BrainConnect from re-holding
+# live run state. Whether the model is actually loaded on :8080 right now is
+# ComputeConnect's to answer, never this registry's.
+ROLE_DEPLOYED = "deployed"    # the DECLARED-deployed model (STATIC; never live state)
 
 
 @dataclass(frozen=True)
@@ -145,6 +169,13 @@ def preferred_model(tier_name: str) -> str | None:
 
 
 def deployed_model(tier_name: str) -> str | None:
+    """The DECLARED-deployed model for a tier — a STATIC recorded fact from data.
+
+    This is NOT a liveness check. It says which model is *recorded* as serving the
+    tier, not whether that model is loaded or reachable right now. Host/residency
+    liveness belongs to ComputeConnect; wiring this to it would re-hold live run
+    state, which ADR 0008 / LEDGER_SPEC §2 forbid.
+    """
     return get_tier(tier_name).deployed_model
 
 
@@ -174,6 +205,11 @@ def _specs_for(t: TierSeed) -> list[_ClaimSpec]:
     deployed model declarations (when the tier names them)."""
     caps = ", ".join(t.required_capabilities)
     specs: list[_ClaimSpec] = [
+        # Tier-STRUCTURE metadata is GLOBAL-scoped and REGISTRY-STRUCTURAL, not a
+        # model-performance fact: it describes the registry's own hierarchy, not a
+        # measured property of any model. So it carries REGISTRY_STRUCTURAL_TAG, NOT
+        # the model_performance tag — §7 confines model_performance to model/worker
+        # scope, and a global claim must never bind it.
         _ClaimSpec(
             key=_key(ROLE_TIER, t.name), role=ROLE_TIER, tier=t.name,
             scope=GLOBAL,
@@ -181,9 +217,10 @@ def _specs_for(t: TierSeed) -> list[_ClaimSpec]:
                   f"capabilities [{caps}]; runtime provider binding: {t.provider}. "
                   "Tier-hierarchy metadata for the model/worker capability registry; "
                   "carries no benchmark numbers."),
-            tags=(MODEL_PERFORMANCE_TAG, _key(ROLE_TIER, t.name))),
+            tags=(REGISTRY_STRUCTURAL_TAG, _key(ROLE_TIER, t.name))),
     ]
     if t.preferred_model:
+        # A MODEL claim: model-scoped, so it legitimately binds model_performance.
         specs.append(_ClaimSpec(
             key=_key(ROLE_PREFERRED, t.name), role=ROLE_PREFERRED, tier=t.name,
             scope=Scope("model", t.preferred_model), model=t.preferred_model,
@@ -193,11 +230,15 @@ def _specs_for(t: TierSeed) -> list[_ClaimSpec]:
                   "numbers have been measured for it."),
             tags=(MODEL_PERFORMANCE_TAG, _key(ROLE_PREFERRED, t.name))))
     if t.deployed_model:
+        # A DECLARED-STATIC model claim (model-scoped). It records which model is
+        # recorded as serving the tier — NOT that it is live. Never wire this to
+        # ComputeConnect residency or host liveness (ADR 0008 / §2 no-live-state).
         specs.append(_ClaimSpec(
             key=_key(ROLE_DEPLOYED, t.name), role=ROLE_DEPLOYED, tier=t.name,
             scope=Scope("model", t.deployed_model), model=t.deployed_model,
-            text=(f"Currently DEPLOYED model for the '{t.name}' tier: "
-                  f"{t.deployed_model}."),
+            text=(f"DECLARED-deployed model recorded for the '{t.name}' tier: "
+                  f"{t.deployed_model}. A static recorded fact, not a liveness "
+                  "signal."),
             tags=(MODEL_PERFORMANCE_TAG, _key(ROLE_DEPLOYED, t.name))))
     return specs
 
@@ -210,38 +251,52 @@ def all_specs() -> list[_ClaimSpec]:
 
 
 # --- status lookup (the trust half; joins DATA to the ledger) ---------------
-def _status_for(repo: Repo, key: str) -> dict:
-    """Where a registry fact stands in the ledger, keyed by its stable tag.
-
-    A promoted claim wins over a pending candidate (a promoted fact of record
-    supersedes its own proposal). Ordering is by id so the answer is deterministic
-    even if a key were ever filed twice. `trusted` reflects the ledger's authority
-    signal: a claim is trusted only when promoted AND not in an open contradiction
-    (LEDGER_SPEC §14.1 — status is not trust).
-    """
-    like = f"%{json.dumps(key)}%"  # the key as its JSON-quoted array element
-    claim = repo.one(
-        "SELECT id, status FROM claims WHERE tags LIKE ? ORDER BY id LIMIT 1",
-        (like,))
-    if claim:
-        promoted = claim["status"] == "promoted"
-        trusted = False
-        if promoted:
-            disputed = repo.one(
-                "SELECT 1 AS x FROM contradictions "
-                "WHERE status='open' AND (claim_a=? OR claim_b=?) LIMIT 1",
-                (claim["id"], claim["id"]))
-            trusted = disputed is None
-        return {"state": "claim", "ref": refs.claim(claim["id"]),
-                "status": claim["status"], "promoted": promoted, "trusted": trusted}
-    cand = repo.one(
-        "SELECT id, status FROM memory_candidates WHERE tags LIKE ? ORDER BY id LIMIT 1",
-        (like,))
-    if cand:
-        return {"state": "candidate", "ref": refs.candidate(cand["id"]),
-                "status": cand["status"], "promoted": False, "trusted": False}
+def _absent() -> dict:
     return {"state": "absent", "ref": None, "status": "absent",
             "promoted": False, "trusted": False}
+
+
+def _status_for(repo: Repo, key: str) -> dict:
+    """Where the registry's OWN canonical fact for `key` stands in the ledger.
+
+    Resolution is by the registry-CONTROLLED, UNFORGEABLE marker the registry wrote
+    into the candidate's metadata at seed time (candidates.REGISTRY_CANONICAL_KEY),
+    matched EXACTLY via `json_extract` — NEVER by the public `reg:*` tag. That tag
+    is squattable: `api.capture_candidate` forwards arbitrary caller tags, so any
+    agent can file a candidate carrying `reg:preferred:...`. Such a squatter does
+    NOT carry this marker (the public metadata path strips reserved keys), so it can
+    neither be surfaced here nor suppress the canonical fact. This is the fix for the
+    tag-squatting backdoor.
+
+    A promoted canonical candidate resolves to its claim of record (via
+    `promoted_claim_id`, the registry's own link — again not a tag). `trusted`
+    reflects the ledger's authority signal: promoted AND not in an open
+    contradiction (LEDGER_SPEC §14.1 — status is not trust). Ordering by id keeps
+    the answer deterministic even if a key were somehow filed twice.
+    """
+    cand = repo.one(
+        "SELECT id, status, promoted_claim_id FROM memory_candidates "
+        "WHERE json_extract(metadata, ?) = ? ORDER BY id LIMIT 1",
+        (_CANON_PATH, key))
+    if cand is None:
+        return _absent()
+    if cand["promoted_claim_id"] is not None:
+        claim = repo.one(
+            "SELECT id, status FROM claims WHERE id = ?", (cand["promoted_claim_id"],))
+        if claim is not None:
+            promoted = claim["status"] == "promoted"
+            trusted = False
+            if promoted:
+                disputed = repo.one(
+                    "SELECT 1 AS x FROM contradictions "
+                    "WHERE status='open' AND (claim_a=? OR claim_b=?) LIMIT 1",
+                    (claim["id"], claim["id"]))
+                trusted = disputed is None
+            return {"state": "claim", "ref": refs.claim(claim["id"]),
+                    "status": claim["status"], "promoted": promoted,
+                    "trusted": trusted}
+    return {"state": "candidate", "ref": refs.candidate(cand["id"]),
+            "status": cand["status"], "promoted": False, "trusted": False}
 
 
 def _model_entry(repo: Repo, spec: _ClaimSpec) -> dict:
@@ -287,6 +342,22 @@ def snapshot(repo: Repo) -> dict:
 
 
 # --- seeding (proposes; never promotes) -------------------------------------
+def _squatter_id(repo: Repo, key: str) -> int | None:
+    """A NON-registry candidate that has squatted the public `reg:*` tag for `key`.
+
+    Membership is EXACT JSON-array containment (`json_each` value equality), never a
+    `LIKE '%...%'` substring — so a future tier/role name containing `_` or `%`
+    cannot over-match a different key. A registry-authored candidate (one carrying
+    the unforgeable marker) is excluded: it is not a squatter, it is us.
+    """
+    row = repo.one(
+        "SELECT id FROM memory_candidates "
+        "WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?) "
+        "AND json_extract(metadata, ?) IS NULL ORDER BY id LIMIT 1",
+        (key, _CANON_PATH))
+    return row["id"] if row else None
+
+
 def seed(repo: Repo, *, proposed_by: str = "registry-seed",
          proposed_by_type: str = "tool") -> list[str]:
     """File the tier hierarchy + model declarations as PENDING memory candidates.
@@ -297,14 +368,29 @@ def seed(repo: Repo, *, proposed_by: str = "registry-seed",
     change that. A model or agent cannot use this to confer trust on a capability
     claim about itself — promotion is `candidates.promote`, which refuses every
     agent reviewer type (LEDGER_SPEC §2).
+
+    Idempotency and squatting are resolved by the UNFORGEABLE registry marker, never
+    by the public tag: a fact is "already filed" only when the registry's OWN
+    canonical candidate/claim exists (marker present). If a non-registry actor has
+    squatted the `reg:*` tag, that does NOT cause a silent skip — the canonical fact
+    is still filed (carrying the marker), and a warning surfaces the collision for a
+    human. The squatter can neither impersonate nor suppress the canonical fact.
     """
     created: list[str] = []
     for spec in all_specs():
         if _status_for(repo, spec.key)["state"] != "absent":
-            continue  # already filed (as a candidate or a promoted claim)
+            continue  # OUR canonical fact is already filed (marker present)
+        squatter = _squatter_id(repo, spec.key)
+        if squatter is not None:
+            warnings.warn(
+                f"registry: public tag {spec.key!r} was squatted by non-registry "
+                f"candidate #{squatter}; filing the canonical fact anyway (the "
+                "squatter cannot impersonate or suppress it).",
+                stacklevel=2)
         cid, _ = candidates.create_checked(
             repo, spec.text, proposed_by=proposed_by,
             proposed_by_type=proposed_by_type,
-            proposed_scopes=[spec.scope], tags=list(spec.tags))
+            proposed_scopes=[spec.scope], tags=list(spec.tags),
+            registry_canonical=spec.key)
         created.append(refs.candidate(cid))
     return created

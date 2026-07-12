@@ -44,6 +44,18 @@ _REVIEWABLE_FROM = ("pending",)
 # agent *asserted* this text, a librarian did not extract it from the source.
 PROMOTION_EVIDENCE_TYPE = "asserted"
 
+# A registry-OWNED, unforgeable marker recorded in candidate metadata under this
+# reserved key. It is the one thing the capability registry (registry.py) trusts to
+# recognise its OWN canonical facts, because a public *tag* is squattable — the
+# capture API forwards arbitrary caller tags — while this key can be written ONLY by
+# an internal caller that passes the dedicated `registry_canonical` argument to
+# `create_checked`. Any value a public caller tries to smuggle in through the
+# `metadata` dict is stripped before the row is written (see `create_checked`), so an
+# agent can neither impersonate a canonical registry fact nor suppress one. Reserved
+# keys are a closed set so the guard is total.
+REGISTRY_CANONICAL_KEY = "registry_canonical"
+_RESERVED_METADATA_KEYS = (REGISTRY_CANONICAL_KEY,)
+
 
 class CandidateError(Exception):
     pass
@@ -110,7 +122,9 @@ def create_checked(repo: Repo, text: str, *, proposed_by: str, proposed_by_type:
                    task_id: str | None = None,
                    proposed_scopes: list[Scope] | None = None,
                    tags: list[str] | None = None, metadata: dict | None = None,
-                   harness: str | None = None) -> tuple[int, "safety.SafetyResult"]:
+                   harness: str | None = None,
+                   registry_canonical: str | None = None,
+                   ) -> tuple[int, "safety.SafetyResult"]:
     """File a PENDING memory candidate. Never promotes, by construction.
 
     Returns `(candidate_id, safety_verdict)`. The stored text is the verdict's
@@ -142,6 +156,15 @@ def create_checked(repo: Repo, text: str, *, proposed_by: str, proposed_by_type:
     quarantined = safety.at_least(verdict.decision, safety.Decision.quarantine)
 
     meta = dict(metadata or {})
+    # Reserved registry-controlled keys can NEVER be set through the public
+    # metadata dict. Strip anything a caller tried to smuggle in before the row is
+    # written — only the dedicated `registry_canonical` argument (used solely by
+    # registry.seed) may write the marker below. This is what makes the marker
+    # unforgeable and closes the tag-squatting backdoor at its root.
+    for reserved in _RESERVED_METADATA_KEYS:
+        meta.pop(reserved, None)
+    if registry_canonical is not None:
+        meta[REGISTRY_CANONICAL_KEY] = registry_canonical
     if not verdict.clean:
         # An audit-safe record that capture was attempted and what was seen. It
         # holds spans and rule names, never the matched value.

@@ -883,13 +883,15 @@ def cmd_project(args):
 
 
 def cmd_ledger_health(args):
+    want_json = getattr(args, "json", False)
     with Repo.open() as repo:
         h = apimod.health(repo)
         # Surface the declared preferred high-capability-local model by READING the
         # registry data (ADR 0008 Lane 1) — never a hard-coded constant. The trust
-        # status is read from the ledger alongside it.
-        snap = registrymod.snapshot(repo)
-    if _emit(h, getattr(args, "json", False)):
+        # status is read from the ledger alongside it. Only computed for the
+        # human-readable path; the --json path emits `h` alone and never uses it.
+        snap = None if want_json else registrymod.snapshot(repo)
+    if _emit(h, want_json):
         return
     print(f"{h['service']}: {h['role']} — schema v{h['schema_version']}")
     print(f"  backend: {h['backend'].get('backend')} "
