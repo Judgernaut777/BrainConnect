@@ -15,6 +15,11 @@ The flow, in order, and never out of order:
     3. import SAFETY scan         every document runs the existing `memory_candidate`
                                   surface BEFORE it is stored: secrets are masked,
                                   injection / tool-control content is quarantined.
+                                  This covers BOTH the claim body AND every retained
+                                  free-text frontmatter value (notably `provenance`):
+                                  retained metadata is untrusted bundle content too,
+                                  so it is masked / quarantined / dropped-fail-closed
+                                  on the same policy, never stored verbatim.
     4. candidate creation         a PENDING candidate, via `candidates.create_checked`.
                                   There is no argument that makes it anything else.
     5. stop.                      Human promotion is a separate, unchanged surface.
@@ -47,7 +52,7 @@ from pathlib import Path
 
 from ..db import Repo
 from ..scopes import Scope
-from .. import candidates as candmod, ingest, refs, util
+from .. import candidates as candmod, ingest, refs, safety, util
 from .validate import (ValidationLimits, _Frontmatter, _split_frontmatter,
                        validate_bundle)
 from .yamlfmt import split_frontmatter
@@ -65,9 +70,14 @@ _SCAFFOLD_HEADERS = ("## Sources", "## Superseded by", "## Contradicts")
 
 # Structural frontmatter fields we retain on the candidate as "original frontmatter
 # where safe". Deliberately excludes the free-text `title`: a hand-authored hostile
-# bundle could plant a secret there, and this metadata is recallable. The claim
-# BODY is the one field that is safety-scanned and masked; these are short,
-# controlled-vocabulary structural values (ids, scope, status, timestamps).
+# bundle could plant a secret there, and this metadata is recallable. These are the
+# short, controlled-vocabulary structural values (ids, scope, status, timestamps)
+# plus `provenance`, which is free text. Retaining them is NOT the same as trusting
+# them: every string value here is run through the SAME `memory_candidate` safety
+# surface the claim body gets (see `_scan_retained` / `import_bundle`), so a secret,
+# PII, or injection lure planted in `provenance` (or any other retained field) is
+# masked, dropped fail-closed, or quarantined before it can reach recallable
+# candidate metadata. The body is not the only scanned field.
 _SAFE_BC_KEYS = (
     "status", "scope", "confidence", "trusted", "superseded_by",
     "contradictions", "provenance", "valid_from", "valid_until",
@@ -248,6 +258,89 @@ def _doc_tags(front: dict) -> list[str]:
     if isinstance(tags, list):
         return [t for t in tags if isinstance(t, str) and t]
     return []
+
+
+# --- retained-metadata safety ------------------------------------------------
+# Retained frontmatter (`_safe_frontmatter`, `_relationships`) is untrusted bundle
+# content exactly like the claim body. A secret, PII, or injection lure planted in
+# the free-text `provenance` (or any string nested inside a retained structure) must
+# never land RAW in recallable candidate metadata (the `metadata` column,
+# candidates.get(), candidates.listing(), db/dump.sql, log.md). So before any
+# retained value is stored we route every string through the SAME `memory_candidate`
+# surface the body gets, with the SAME fail-closed posture.
+
+#: Sentinel: a retained value that could not be cleared and must NOT be stored.
+_DROP = object()
+
+
+def _new_agg() -> dict:
+    """Accumulator for the metadata scan across all retained values in one doc."""
+    return {"decision": safety.Decision.allow, "kinds": set(),
+            "summaries": [], "dropped": 0, "redacted": False}
+
+
+def _scan_one(repo: Repo, s: str, agg: dict):
+    """Scan one retained free-text string on the `memory_candidate` surface.
+
+    Returns the value to store: the masked text when policy redacts a secret / PII,
+    the original text when it is clean, and `_DROP` when a required engine could not
+    look (fail closed — unscanned free-text is never stored in recallable metadata,
+    matching the body path's refusal to store what it could not clear).
+    """
+    if not s:
+        return s
+    verdict = safety.scan_for(repo, s, safety.MEMORY_CANDIDATE)
+    if safety.at_least(verdict.decision, agg["decision"]):
+        agg["decision"] = verdict.decision
+    if not verdict.clean:
+        agg["kinds"].update(verdict.kinds())
+        agg["summaries"].append(verdict.summary())  # audit-safe: no matched text
+    if verdict.has(safety.Category.scanner_error):
+        # A required engine did not scan: this free-text is UNSCANNED, not clean.
+        agg["dropped"] += 1
+        return _DROP
+    if verdict.redacted:
+        agg["redacted"] = True
+    return verdict.text
+
+
+def _scan_retained(repo: Repo, value, agg: dict):
+    """Recursively mask/drop every free-text string within a retained structure.
+
+    Non-string leaves (bool `trusted`, numeric confidence, `None`) carry no free
+    text and pass through untouched; a dropped string is removed from its container.
+    """
+    if isinstance(value, str):
+        return _scan_one(repo, value, agg)
+    if isinstance(value, list):
+        out = []
+        for x in value:
+            r = _scan_retained(repo, x, agg)
+            if r is not _DROP:
+                out.append(r)
+        return out
+    if isinstance(value, dict):
+        out = {}
+        for k, x in value.items():
+            r = _scan_retained(repo, x, agg)
+            if r is not _DROP:
+                out[k] = r
+        return out
+    return value
+
+
+def _agg_touched(agg: dict) -> bool:
+    return bool(agg["kinds"] or agg["dropped"])
+
+
+def _agg_summary(agg: dict) -> dict:
+    """An audit-safe record of what the retained-metadata scan saw. No matched text."""
+    return {
+        "decision": agg["decision"].value,
+        "kinds": sorted(agg["kinds"]),
+        "dropped_fields": agg["dropped"],
+        "findings": agg["summaries"],
+    }
 
 
 # --- bundle scanning ---------------------------------------------------------
@@ -439,7 +532,18 @@ def import_bundle(repo: Repo, request: ImportRequest) -> ImportResult:
             result.documents.append(dr)
             continue
 
-        meta = {"okf_import": {
+        # (metadata SAFETY) Retained frontmatter is untrusted bundle content just
+        # like the body. Mask secrets/PII, drop unscanned free-text fail-closed, and
+        # flag high-risk injection BEFORE any of it is stored in recallable metadata.
+        # `_scan_retained` recurses over every string (e.g. inside the `provenance`
+        # dict); the aggregate verdict decides whether the whole candidate is
+        # quarantined, on the same policy the body uses.
+        meta_agg = _new_agg()
+        safe_frontmatter = _scan_retained(repo, _safe_frontmatter(front), meta_agg)
+        safe_relationships = _scan_retained(repo, _relationships(front), meta_agg)
+        meta_quarantine = safety.at_least(meta_agg["decision"],
+                                          safety.Decision.quarantine)
+        okf_meta = {
             "bundle_path": str(Path(request.bundle_dir)),
             "bundle_checksum": bundle_checksum,
             "okf_version": verdict.okf_version,
@@ -449,12 +553,24 @@ def import_bundle(repo: Repo, request: ImportRequest) -> ImportResult:
             "imported_at": now,
             "imported_by": request.imported_by,
             "imported_by_type": request.imported_by_type,
-            "relationships": _relationships(front),
-            "frontmatter": _safe_frontmatter(front),
-        }}
+            "relationships": safe_relationships,
+            "frontmatter": safe_frontmatter,
+        }
+        if _agg_touched(meta_agg):
+            okf_meta["metadata_safety"] = _agg_summary(meta_agg)
+        meta = {"okf_import": okf_meta}
+        if meta_quarantine:
+            # A retained-metadata finding (injection / tool-control, or a required
+            # engine that could not look) quarantines the candidate, exactly as the
+            # body path does. `candidates.create_checked` only ever ADDS quarantine,
+            # so pre-setting this survives its own body verdict.
+            meta["quarantined"] = True
 
         if request.dry_run:
             dr.outcome = "updated" if is_update else "created"
+            dr.quarantined = meta_quarantine
+            if _agg_touched(meta_agg):
+                dr.safety_kinds = sorted(meta_agg["kinds"])
             dr.detail = "dry-run: would create a pending candidate"
             (result.updated if is_update else result.created).append(rel)
             result.documents.append(dr)
@@ -497,11 +613,14 @@ def import_bundle(repo: Repo, request: ImportRequest) -> ImportResult:
         ref = refs.candidate(cid)
         dr.candidate_ref = ref
         dr.outcome = "updated" if is_update else "created"
+        # The candidate is quarantined / redacted / flagged if EITHER the body OR the
+        # retained metadata triggered it — the metadata scan is a peer of the body
+        # scan, not an afterthought.
         dr.quarantined = candmod.safety.at_least(
-            sverdict.decision, candmod.safety.Decision.quarantine)
-        dr.redacted = sverdict.redacted
-        if not sverdict.clean:
-            dr.safety_kinds = sverdict.kinds()
+            sverdict.decision, candmod.safety.Decision.quarantine) or meta_quarantine
+        dr.redacted = sverdict.redacted or meta_agg["redacted"]
+        if not sverdict.clean or meta_agg["kinds"]:
+            dr.safety_kinds = sorted(set(sverdict.kinds()) | set(meta_agg["kinds"]))
         (result.updated if is_update else result.created).append(ref)
         if dr.quarantined:
             result.quarantined.append(ref)

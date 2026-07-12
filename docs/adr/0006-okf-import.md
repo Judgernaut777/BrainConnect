@@ -66,20 +66,42 @@ an injection lure.
    before it is written** to an inbox artifact or a candidate row, and **quarantines**
    high-severity injection / tool-control content (accepted-but-quarantined, needing a
    human override at promotion). That is precisely import's requirement, so import
-   routes every document body through `create_checked` and introduces **no new or
+   routes every document body **and every retained free-text frontmatter value**
+   through the `memory_candidate` scan (see point 8) and introduces **no new or
    broadened safety policy**. A safety *block* (should a future engine map a category
    that way on this surface) stores nothing; the attempt is recorded in the result and
    the audit log carrying finding *kinds* only — never the matched value, never a raw
    span in a log.
 
-8. **Provenance is preserved, and safely.** Each candidate's `metadata.okf_import`
-   records bundle path, bundle checksum (the "source checksum"), OKF version, document
-   path, external id, per-document content checksum, imported-at timestamp, importing
-   actor + type, and relative relationships. "Original frontmatter where safe" is the
-   structural, controlled-vocabulary subset of the `brainconnect:` block only — the
-   free-text `title` and unknown extension fields are deliberately **not** copied into
-   recallable metadata, because a hostile bundle could plant a secret there and only
-   the claim **body** is the field that is safety-scanned and masked.
+8. **Provenance is preserved, and safely — including the retained frontmatter, not
+   just the body.** Each candidate's `metadata.okf_import` records bundle path, bundle
+   checksum (the "source checksum"), OKF version, document path, external id,
+   per-document content checksum, imported-at timestamp, importing actor + type, and
+   relative relationships. "Original frontmatter where safe" is the structural,
+   controlled-vocabulary subset of the `brainconnect:` block plus the free-text
+   `provenance` — the free-text `title` and unknown extension fields are deliberately
+   **not** copied into recallable metadata.
+
+   Retaining `provenance` is **not** the same as trusting it. Because that retained
+   subset lands in recallable storage (the `metadata` column, `candidate` get/listing,
+   `db/dump.sql`, `log.md`), **every string value in it is routed through the same
+   `memory_candidate` scan the body gets**, recursively over nested structures, before
+   it is stored: a secret / PII value is **masked**, a high-risk injection /
+   tool-control value **quarantines the whole candidate**, and a value a **required
+   engine could not scan is dropped fail-closed** (unscanned free-text is never
+   stored). A clean value round-trips verbatim; an audit-safe record of the metadata
+   scan (decision, kinds, findings — never a matched value) is kept at
+   `metadata.okf_import.metadata_safety`.
+
+   > **Correction (import-safety fix).** An earlier revision of this ADR asserted that
+   > "only the claim body is safety-scanned and masked" while `provenance` (free text)
+   > was retained verbatim, length-bounded only. That was a **critical defect**: a
+   > secret planted in `brainconnect.provenance` with a clean body was stored **raw**
+   > in candidate metadata while the body scan reported clean. The retained subset is
+   > now scanned on the same policy as the body (regression-tested in
+   > `tests/acceptance.py::_okf_import_checks`). The scan is still reuse of the
+   > existing `memory_candidate` surface — no new or broadened policy, and the export
+   > path is unchanged.
 
 9. **No live mirror.** No directory watching, no bidirectional sync, no auto-merge, no
    auto-supersede, no silent conflict resolution. Import is a one-shot,

@@ -5075,6 +5075,190 @@ def _okf_import_checks():
               code_ok == 0 and code_bad != 0)
         check("okf/import CLI: a valid CLI import lands only PENDING candidates",
               cli_cands and all(x["status"] == "pending" for x in cli_cands))
+
+        # -- RETAINED-FRONTMATTER SAFETY -----------------------------------------
+        # The import-safety scan is not the body's alone: retained frontmatter
+        # (notably the free-text `provenance`) is untrusted bundle content too, and
+        # a secret / PII / injection lure planted there must never reach recallable
+        # candidate metadata verbatim. These regressions pin that the retained
+        # values are masked / quarantined / dropped-fail-closed on the SAME policy.
+        CLEANBODY = "A perfectly clean durable fact with nothing sensitive in it."
+
+        def _doc_fm(ext_id, body, fm_lines):
+            extra = "".join(f"  {ln}\n" for ln in fm_lines)
+            return (f'---\ntitle: "a title"\nokf_version: "{OKF_VERSION}"\n'
+                    f'brainconnect:\n  id: "{ext_id}"\n  status: "promoted"\n'
+                    f'  scope: "global"\n  confidence: "high"\n  trusted: true\n'
+                    f'{extra}---\n# a title\n{body}\n')
+
+        def _bundle_fm(name, ext_id, body, fm_lines, marker=MARKER):
+            d = base / name
+            (d / "claims").mkdir(parents=True)
+            if marker is not None:
+                (d / ".okf-bundle").write_text(marker, encoding="utf-8")
+            (d / "claims" / f"{ext_id}.md").write_text(
+                _doc_fm(ext_id, body, fm_lines), encoding="utf-8")
+            return d
+
+        sroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-okfimp-meta-")))
+
+        def _imp_s(bundle, **kw):
+            with Repo.open(start=sroot) as r:
+                return OKFAdapter().import_bundle(r, ImportRequest(
+                    bundle_dir=str(bundle), **kw))
+
+        # (1) The ORIGINAL defect: a secret in brainconnect.provenance with a CLEAN
+        #     body lands raw in metadata. It must now be masked and absent from every
+        #     recallable surface (metadata column, get(), listing(), dump.sql, log.md).
+        prov_b = _bundle_fm("prov_secret", "claim_prov", CLEANBODY,
+                            [f'provenance: "captured {SECRET} upstream"'])
+        _imp_s(prov_b, scope=Scope("global"), imported_by="matthew",
+               imported_by_type="human")
+        with Repo.open(start=sroot) as r:
+            prow = r.one("SELECT * FROM memory_candidates "
+                         "WHERE source_ref='okf:claim_prov'")
+            pget = _cand.get(r, prow["id"])
+            plist = _cand.listing(r, status="pending")
+        p_dump = (sroot / "db" / "dump.sql").read_text(encoding="utf-8")
+        p_log = (sroot / "log.md").read_text(encoding="utf-8")
+        check("okf/import: a SECRET in brainconnect.provenance is MASKED, not stored "
+              "raw in the metadata column / get() / listing() / dump.sql / log.md "
+              "(the original OKF import-safety defect, closed)",
+              SECRET not in (prow["metadata"] or "")
+              and SECRET not in json.dumps(pget["metadata"])
+              and SECRET not in json.dumps(plist)
+              and SECRET not in p_dump and SECRET not in p_log)
+        check("okf/import: the masked provenance is still retained and the scan is "
+              "recorded audit-safely (kinds only, never the matched value)",
+              "provenance" in pget["metadata"]["okf_import"]["frontmatter"]
+              and SECRET not in pget["metadata"]["okf_import"]["frontmatter"]["provenance"]
+              and "secret" in pget["metadata"]["okf_import"]["metadata_safety"]["kinds"]
+              and SECRET not in json.dumps(
+                  pget["metadata"]["okf_import"]["metadata_safety"]))
+        check("okf/import: a clean BODY is untouched when only the metadata carried "
+              "the secret",
+              pget["text"] == CLEANBODY)
+
+        # (2) provenance is not special-cased: a secret in EVERY other retained
+        #     free-text field is masked too.
+        # `superseded_by` / `contradictions` carry referential-integrity constraints
+        # (they must point at a real bundle document) so they cannot hold arbitrary
+        # free text; the remaining retained free-text fields are exercised here.
+        multi_b = _bundle_fm("multi_secret", "claim_multi", CLEANBODY, [
+            f'provenance: "prov {SECRET} x"',
+            f'valid_from: "vf {SECRET} x"',
+            f'valid_until: "vu {SECRET} x"',
+            f'learned_at: "la {SECRET} x"',
+            f'last_verified_at: "lv {SECRET} x"',
+        ])
+        _imp_s(multi_b, scope=Scope("global"), imported_by="matthew",
+               imported_by_type="human")
+        with Repo.open(start=sroot) as r:
+            mrow = r.one("SELECT * FROM memory_candidates "
+                         "WHERE source_ref='okf:claim_multi'")
+            mget = _cand.get(r, mrow["id"])
+            mlist = _cand.listing(r, status="pending")
+        m_dump = (sroot / "db" / "dump.sql").read_text(encoding="utf-8")
+        check("okf/import: a secret in ANY retained free-text field (provenance, "
+              "valid_from/until, learned_at, last_verified_at) is masked — never "
+              "stored raw in metadata / listing / dump.sql",
+              SECRET not in (mrow["metadata"] or "")
+              and SECRET not in json.dumps(mget["metadata"])
+              and SECRET not in json.dumps(mlist)
+              and SECRET not in m_dump)
+
+        # (3) an INJECTION lure in retained metadata QUARANTINES the candidate, even
+        #     with a clean body — consistent with the body path.
+        inj_b = _bundle_fm("prov_inject", "claim_inj", CLEANBODY,
+                           [f'provenance: "{INJECTION}"'])
+        res_i = _imp_s(inj_b, scope=Scope("global"), imported_by="matthew",
+                       imported_by_type="human")
+        with Repo.open(start=sroot) as r:
+            iget = _cand.get(r, r.one(
+                "SELECT id FROM memory_candidates WHERE source_ref='okf:claim_inj'"
+                )["id"])
+        check("okf/import: an INJECTION lure in retained metadata QUARANTINES the "
+              "candidate (needs a human override), even with a clean body",
+              iget["metadata"].get("quarantined") is True
+              and "prompt_injection" in
+              iget["metadata"]["okf_import"]["metadata_safety"]["kinds"]
+              and any("candidate_" in q for q in res_i.quarantined))
+
+        # (4) a CLEAN provenance still round-trips verbatim — masking engages only on
+        #     risk, so existing behavior is preserved.
+        CLEANPROV = "captured from the upstream ledger export on 2026-07-01"
+        clean_b = _bundle_fm("prov_clean", "claim_clean", CLEANBODY,
+                             [f'provenance: "{CLEANPROV}"'])
+        res_c = _imp_s(clean_b, scope=Scope("global"), imported_by="matthew",
+                       imported_by_type="human")
+        with Repo.open(start=sroot) as r:
+            cget = _cand.get(r, r.one(
+                "SELECT id FROM memory_candidates WHERE source_ref='okf:claim_clean'"
+                )["id"])
+        check("okf/import: a CLEAN provenance round-trips verbatim and adds no "
+              "quarantine / safety record (existing behavior preserved)",
+              cget["metadata"]["okf_import"]["frontmatter"]["provenance"] == CLEANPROV
+              and "metadata_safety" not in cget["metadata"]["okf_import"]
+              and cget["metadata"].get("quarantined") is not True
+              and not res_c.quarantined)
+
+        # (5) FAIL CLOSED: when a REQUIRED engine cannot look, retained free-text is
+        #     DROPPED rather than stored unscanned (the body's fail-closed posture).
+        from brainconnect.safety import registry as _sreg, pipeline as _spipe
+        from brainconnect.safety.engines.base import BaseEngine as _BaseEngine
+        from brainconnect.safety.models import Capability as _CAP
+
+        class _FakeUnavail(_BaseEngine):
+            name, version = "gitleaks", "fake-unavail"
+            capabilities = frozenset({_CAP.secrets,
+                                      _CAP.source_or_repository_secrets})
+
+            def __init__(self, **kw):
+                pass
+
+            def available(self):
+                return False
+
+            def scan(self, request):  # pragma: no cover - never reached
+                raise AssertionError("an unavailable engine must not be scanned")
+
+        _saved_factories = dict(_sreg.ENGINE_FACTORIES)
+        _sreg.ENGINE_FACTORIES["gitleaks"] = _FakeUnavail
+        _spipe.clear_engine_cache()
+        try:
+            fcroot = make_repo(Path(tempfile.mkdtemp(
+                prefix="wikibrain-okfimp-failclosed-")))
+            fc_b = _bundle_fm("prov_failclosed", "claim_fc", CLEANBODY,
+                              [f'provenance: "captured {SECRET} upstream"'])
+            with Repo.open(start=fcroot) as r:
+                r.cfg.data["safety"] = {
+                    "enabled": True, "max_text_chars": 200000,
+                    "engines": {"baseline": {"enabled": True, "required": True},
+                                "gitleaks": {"enabled": True, "required": True}}}
+                OKFAdapter().import_bundle(r, ImportRequest(
+                    bundle_dir=str(fc_b), scope=Scope("global"),
+                    imported_by="matthew", imported_by_type="human"))
+            with Repo.open(start=fcroot) as r:
+                fcrow = r.one("SELECT * FROM memory_candidates "
+                              "WHERE source_ref='okf:claim_fc'")
+                fcget = _cand.get(r, fcrow["id"]) if fcrow else None
+            fc_dump = (fcroot / "db" / "dump.sql").read_text(encoding="utf-8")
+            fc_log = (fcroot / "log.md").read_text(encoding="utf-8")
+            check("okf/import: with a REQUIRED engine unavailable, retained free-text "
+                  "is DROPPED (fail closed) — the candidate exists but stores NO raw "
+                  "secret and NO unscanned provenance",
+                  fcget is not None
+                  and SECRET not in (fcrow["metadata"] or "")
+                  and SECRET not in json.dumps(fcget["metadata"])
+                  and SECRET not in fc_dump and SECRET not in fc_log
+                  and "provenance" not in
+                  fcget["metadata"]["okf_import"]["frontmatter"]
+                  and fcget["metadata"]["okf_import"]["metadata_safety"][
+                      "dropped_fields"] >= 1)
+        finally:
+            _sreg.ENGINE_FACTORIES.clear()
+            _sreg.ENGINE_FACTORIES.update(_saved_factories)
+            _spipe.clear_engine_cache()
     finally:
         if _saved is not None:
             os.environ["BRAINCONNECT_DB"] = _saved

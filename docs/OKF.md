@@ -271,12 +271,18 @@ stays a separate, human-only step (see `docs/SAFETY.md`, LEDGER_SPEC §5.2).
    timestamp, the importing actor and type, and the document's relative
    relationships (`superseded_by`, `contradictions`). These land in the candidate's
    `metadata.okf_import`.
-3. **Import safety scan** — every document's body runs through the existing
-   `memory_candidate` safety surface **before** it is stored anywhere. A secret is
-   **masked** before it can reach an inbox artifact or a candidate row;
-   injection / tool-control content is **quarantined** (accepted-but-quarantined,
-   needs a human override at promotion, exactly like a quarantined capture). No raw
-   unsafe span is ever written to a log or to recallable metadata.
+3. **Import safety scan** — every document runs through the existing
+   `memory_candidate` safety surface **before** it is stored anywhere. This covers
+   **both the claim body and every retained free-text frontmatter value** (notably
+   `provenance`): retained metadata is untrusted bundle content too, and it lands in
+   recallable candidate storage (the `metadata` column, `candidate` get/listing,
+   `db/dump.sql`, `log.md`), so it gets the same scan — the body is *not* the only
+   scanned field. On that surface a secret is **masked** before it can reach an inbox
+   artifact or a candidate row; injection / tool-control content is **quarantined**
+   (accepted-but-quarantined, needs a human override at promotion, exactly like a
+   quarantined capture); and a retained free-text value that a **required engine could
+   not scan is dropped fail-closed** — never stored unscanned. No raw unsafe span is
+   ever written to a log or to recallable metadata.
 4. **Candidate creation** — a PENDING candidate, via the same `candidates.create_checked`
    path a normal capture uses. There is no argument that makes it anything else.
 5. **Stop.** Human promotion is separate and unchanged.
@@ -334,6 +340,31 @@ tool-control content, which is exactly import's requirement (see ADR 0006). A sa
 **block** (should a future engine map a category that way on this surface) stores
 nothing; the attempt is recorded in the result and the audit log, carrying finding
 *kinds* only — never the matched value.
+
+**Retained frontmatter is scanned, not just the body.** The candidate keeps a
+*subset* of the document's `brainconnect:` frontmatter as informational metadata —
+the structured, low-risk keys (`status`, `scope`, `confidence`, `trusted`, the
+`valid_*`/`learned_at`/`last_verified_at` timestamps, and the `superseded_by` /
+`contradictions` relationships) plus the **free-text `provenance`**. Every string
+value in that retained subset (recursively, including nested structures like the
+`provenance` dict) is routed through the **same `memory_candidate` scan the body
+gets**, before storage:
+
+- a **secret or PII** in a retained value is **masked** (the stored value is the
+  masked representation), so no raw credential ever reaches the `metadata` column,
+  `candidate` get/listing, `db/dump.sql`, or `log.md`;
+- **high-risk injection / tool-control** content in a retained value **quarantines
+  the whole candidate**, exactly as it would in the body;
+- if a **required safety engine is unavailable**, the retained free-text is
+  **dropped fail-closed** — unscanned free-text is never stored — matching the body
+  path's refusal to store what it could not clear.
+
+A clean retained value round-trips verbatim; masking, quarantine, and dropping
+engage only on a finding. An audit-safe record of what the metadata scan saw
+(decision, kinds, findings — never a matched value) is kept at
+`metadata.okf_import.metadata_safety`. This closes the gap where a secret planted in
+`brainconnect.provenance` with a clean body would have been stored raw while the body
+scan reported clean.
 
 ### What import is not
 
