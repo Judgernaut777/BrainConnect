@@ -52,6 +52,14 @@ _NEVER_EXPORTED = ("rejected", "archived")
 #: text-free, so it is safe as a title and cannot leak the original.
 _WITHHELD_BODY = "_Body withheld by safety policy. The claim remains in the ledger._"
 
+#: An explicit, unambiguous machine boundary written after every claim body and
+#: before any appended scaffolding (## Sources / ## Superseded by / ## Contradicts).
+#: The importer splits on THIS, not on a human `##` heading, so a claim body that
+#: itself contains a `## Sources` heading is no longer truncated on import — the
+#: body/scaffold boundary is machine-defined, not guessed. It is an HTML comment,
+#: so it renders invisibly and carries no markdown link (validation is unaffected).
+BODY_END_MARKER = "<!-- okf:body-end -->"
+
 _LINK_RE = re.compile(r"\]\(([^)]+)\)")
 
 
@@ -221,8 +229,12 @@ def _claim_doc(repo: Repo, row, *, contradicted: dict[int, set[int]],
     if tags:
         front["tags"] = tags
 
-    # Body + relationship links (relative, resolvable inside the bundle).
-    parts = [yamlfmt.frontmatter(front), f"# {safe_title}\n", body.rstrip() + "\n"]
+    # Body + relationship links (relative, resolvable inside the bundle). An explicit
+    # machine marker terminates the body so the importer never has to guess where the
+    # claim text ends and appended scaffolding begins (a body may legitimately contain
+    # a `## Sources` heading of its own).
+    parts = [yamlfmt.frontmatter(front), f"# {safe_title}\n", body.rstrip() + "\n",
+             f"\n{BODY_END_MARKER}\n"]
     links: list[str] = []
     if sources:
         parts.append("\n## Sources\n")

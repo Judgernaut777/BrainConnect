@@ -51,6 +51,28 @@ not a fidelity *guarantee*.
    (re-derivable; not retained on import to avoid smuggling a secret into recallable
    metadata). Superseded history travels only with `--include-superseded`.
 
+4a. **A body's `exactly-preserved` class is PROVEN, not asserted from safety
+   membership.** The original defect: `_compare()` set the body class purely from
+   withheld/redacted membership and never cross-checked the separately-computed
+   `original_body_survived`, so a body that was neither withheld nor redacted but did
+   not survive byte-for-byte was still reported `exactly-preserved`. Fixed: a
+   non-withheld, non-redacted body is `exactly-preserved` **only if**
+   `original_body_survived` is `True`; otherwise it is downgraded to `lossy` with a
+   `body_class_reason`. A hard guard (`_assert_body_honesty` → `RoundtripHonestyError`)
+   makes emitting `exactly-preserved` for a non-surviving body impossible, and the
+   aggregate `field_fidelity[body].observed` block reconciles the best-case contract
+   with per-claim reality. **Two known lossy body transforms** are documented in
+   `docs/OKF.md`: (a) **trailing-whitespace normalization** (exporter `rstrip` +
+   importer `strip`) — left as-is, honestly reported `lossy` (`"normalized"`); and (b)
+   **embedded-heading ambiguity** — a body containing its own `## Sources` heading used
+   to be truncated on import. **Delimiter hardened:** the exporter now writes an
+   explicit `<!-- okf:body-end -->` machine marker after every body and the importer
+   cuts there instead of at a human heading, so such a body survives byte-for-byte and
+   is honestly `exactly-preserved`. The header-cutting heuristic remains only as a
+   tolerant fallback for a foreign bundle without the marker. The marker is an HTML
+   comment (invisible, no Markdown link), so Stage 1/2/3 and export determinism are
+   unaffected.
+
 5. **The report never claims complete fidelity.** `RoundtripReport.fidelity_claim` is
    a fixed "PARTIAL BY DESIGN" statement naming exactly what is not carried. This is a
    required field, not an optional footnote.

@@ -79,3 +79,11 @@ safe", or that exporting starts to change the thing it is projecting.
   not scan the ledger at rest — a claim is caught on the way out, consistent with
   the recall surface (docs/SAFETY.md, "scanning happens at capture, recall, and
   promotion — not at rest").
+- **Amendment (Stage 4 delimiter hardening).** Each claim body is now terminated by
+  an explicit `<!-- okf:body-end -->` machine marker written after the body and before
+  any appended `## Sources` / `## Superseded by` / `## Contradicts` scaffolding. This
+  gives the importer an unambiguous body/scaffold boundary (a body may legitimately
+  contain its own `## Sources` heading). The marker is an HTML comment — invisible on
+  render, carries no Markdown link, and is a fixed string — so structural validation
+  and byte-for-byte export determinism are unchanged. See `docs/OKF.md` ("Known lossy
+  body transforms") and ADR 0007 §4a.

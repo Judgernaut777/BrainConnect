@@ -54,7 +54,7 @@ from ..scopes import Scope
 from .. import refs
 from .export import FORMAT_NAME, OKF_VERSION, export_bundle
 from .model import ExportRequest
-from .okfimport import ImportRequest, import_bundle, _REF_PREFIX
+from .okfimport import ImportRequest, import_bundle, _REF_PREFIX, _SCAFFOLD_HEADERS
 from .validate import ValidationLimits, validate_bundle
 
 REPORT_VERSION = "1"
@@ -67,6 +67,25 @@ LOSSY = "lossy"
 GOVERNANCE = "governance-only"
 
 CLASSES = (EXACT, MAPPED, OMITTED, LOSSY, GOVERNANCE)
+
+# Reasons attached to a body's per-claim fidelity class. Safety reasons name a
+# policy degradation; representation reasons name a lossy transform of a clean body.
+BODY_R_EXACT = "byte-for-byte"
+BODY_R_WITHHELD = "withheld-by-safety"
+BODY_R_MASKED = "masked-by-safety"
+BODY_R_NORMALIZED = "normalized"
+BODY_R_TRUNCATED = "truncated-at-embedded-heading"
+BODY_R_NOT_PRESERVED = "not-byte-preserved"
+# Reasons that are safety-policy degradations (not "clean body that failed to
+# survive"); used to separate the contract-EXACT-eligible bodies from the rest.
+_SAFETY_BODY_REASONS = (BODY_R_WITHHELD, BODY_R_MASKED)
+
+
+class RoundtripHonestyError(Exception):
+    """Raised if the report would emit `exactly-preserved` for a body that did not
+    survive byte-for-byte. The honesty guard turns that impossibility into an error
+    rather than a silent overclaim — a body's EXACT class must be *proven*, not
+    asserted from withheld/redacted membership alone."""
 
 
 # --- the static fidelity contract --------------------------------------------
@@ -104,8 +123,13 @@ FIELD_FIDELITY: list[dict] = [
         "classification": EXACT,
         "recoverable": True,
         "rationale": (
-            "A clean claim body is projected verbatim and imported as the "
-            "candidate's text byte-for-byte. Safety policy can degrade this on the "
+            "BEST CASE: a clean claim body is projected verbatim and imported as the "
+            "candidate's text byte-for-byte. This is the aggregate contract, NOT an "
+            "unconditional guarantee — `exactly-preserved` is claimed per claim ONLY "
+            "when that body actually survived byte-for-byte (see per_claim and the "
+            "`observed` block, which downgrades any body that did not). Two known "
+            "lossy transforms of an otherwise clean body are recorded in "
+            "representation_degradations; safety policy degrades it further on the "
             "way out (see safety_degradations)."),
         "safety_degradations": [
             {"when": "secret / PII redacted", "classification": LOSSY,
@@ -116,6 +140,23 @@ FIELD_FIDELITY: list[dict] = [
                      "document is exported with a text-free placeholder, so the "
                      "original body is not carried at all. The claim stays in the "
                      "ledger; nothing is deleted."},
+        ],
+        "representation_degradations": [
+            {"when": "body has trailing whitespace", "classification": LOSSY,
+             "reason": BODY_R_NORMALIZED,
+             "note": "The exporter right-strips the body and the importer strips the "
+                     "recovered text, so trailing whitespace is normalized away and "
+                     "the body is not byte-for-byte. Downgraded to lossy."},
+            {"when": "body contains a '## Sources' / '## Superseded by' / "
+                     "'## Contradicts' heading of its own",
+             "classification": EXACT,
+             "reason": BODY_R_TRUNCATED,
+             "note": "Exporter bundles write an explicit `<!-- okf:body-end -->` "
+                     "machine marker after the body, so the importer cuts there and "
+                     "such a body survives byte-for-byte. Only a FOREIGN bundle that "
+                     "lacks the marker truncates at the first heading — that case is "
+                     "downgraded to lossy with reason "
+                     f"{BODY_R_TRUNCATED!r}."},
         ],
     },
     {
@@ -478,6 +519,11 @@ def roundtrip(source_repo: Repo, request: RoundtripRequest) -> RoundtripReport:
                              withheld_ids, redacted_ids)
         report.per_claim = per_claim
 
+        # Honesty guard: `exactly-preserved` can never survive for a body that did
+        # not survive byte-for-byte. Reconcile the aggregate body view with reality.
+        _assert_body_honesty(per_claim)
+        body_observed = _reconcile_body_fidelity(report.field_fidelity, per_claim)
+
         # --- honesty facts, proven on this ledger ------------------------------
         withheld_bodies_absent = all(
             pc["original_body_survived"] is False
@@ -513,6 +559,14 @@ def roundtrip(source_repo: Repo, request: RoundtripRequest) -> RoundtripReport:
             "no_duplication_on_repeat_import": report.idempotent,
             "candidate_count_after_first_import": n_cands,
             "candidate_count_after_repeat_import": n_cands_after,
+            # body fidelity is PROVEN, not asserted: `exactly-preserved` is emitted
+            # only for a body that survived byte-for-byte; the rest are downgraded.
+            "exact_body_requires_survival": all(
+                pc["original_body_survived"] is True
+                for pc in per_claim if pc["body_class"] == EXACT),
+            "clean_bodies_all_exactly_preserved":
+                not body_observed["downgraded_to_lossy"],
+            "bodies_downgraded_to_lossy": body_observed["downgraded_to_lossy"],
         }
 
         _write(report, request.report_path)
@@ -555,16 +609,26 @@ def _compare(source_repo: Repo, request: RoundtripRequest, cand_by_ref: dict,
         meta = cand["metadata"].get("okf_import", {})
         fm = meta.get("frontmatter", {})
 
-        if claim_id in withheld_ids:
-            body_class = OMITTED
-        elif claim_id in redacted_ids:
-            body_class = LOSSY
-        else:
-            body_class = EXACT
-
+        # Prove survival FIRST, then derive the class from it. A body that is neither
+        # withheld nor redacted is `exactly-preserved` ONLY when it actually survived
+        # byte-for-byte; otherwise it is downgraded to lossy with a recorded reason.
         original_body_survived = None
         if srow is not None:
             original_body_survived = srow["text"] in (cand["text"] or "")
+
+        if claim_id in withheld_ids:
+            body_class, body_reason = OMITTED, BODY_R_WITHHELD
+        elif claim_id in redacted_ids:
+            body_class, body_reason = LOSSY, BODY_R_MASKED
+        elif original_body_survived is True:
+            body_class, body_reason = EXACT, BODY_R_EXACT
+        else:
+            # A clean body that did NOT survive byte-for-byte. Name why so the report
+            # is specific, not just "lossy". `srow is None` (unverifiable) also lands
+            # here: an unproven body is never claimed exact.
+            body_class = LOSSY
+            body_reason = _body_degradation_reason(
+                srow["text"] if srow is not None else None, cand["text"] or "")
 
         out.append({
             "external_id": external_id,
@@ -573,6 +637,7 @@ def _compare(source_repo: Repo, request: RoundtripRequest, cand_by_ref: dict,
             "imported_candidate": refs.candidate(cand["id"]),
             "imported_status": cand["status"],
             "body_class": body_class,
+            "body_class_reason": body_reason,
             "original_body_survived": original_body_survived,
             # governance proofs, per claim:
             "trusted_in_bundle": fm.get("trusted"),
@@ -584,6 +649,68 @@ def _compare(source_repo: Repo, request: RoundtripRequest, cand_by_ref: dict,
             "relationships_as_provenance": meta.get("relationships", {}),
         })
     return out
+
+
+def _body_degradation_reason(original: str | None, imported: str) -> str:
+    """Why a non-withheld, non-redacted body failed to survive byte-for-byte.
+
+    Truncation at an embedded scaffolding heading takes precedence (the more severe
+    loss); a whitespace-only difference is `normalized`; anything else is the generic
+    `not-byte-preserved`. `original is None` means we could not even read the source
+    row — unverifiable, and therefore never claimed exact."""
+    if original is None:
+        return BODY_R_NOT_PRESERVED
+    if any(ln.strip() in _SCAFFOLD_HEADERS for ln in original.split("\n")):
+        return BODY_R_TRUNCATED
+    if original.strip() and original.strip() in (imported or ""):
+        return BODY_R_NORMALIZED
+    return BODY_R_NOT_PRESERVED
+
+
+def _assert_body_honesty(per_claim: list[dict]) -> None:
+    """Hard, data-driven honesty guard: `exactly-preserved` may NEVER be emitted for
+    a body whose `original_body_survived` is not exactly True. Because `_compare`
+    now derives the class from survival, this can only fire on a future regression —
+    which is exactly what it exists to catch. Raises `RoundtripHonestyError`."""
+    for pc in per_claim:
+        if pc["body_class"] == EXACT and pc["original_body_survived"] is not True:
+            raise RoundtripHonestyError(
+                f"body for {pc['external_id']} classified {EXACT!r} but "
+                f"original_body_survived={pc['original_body_survived']!r}; a body's "
+                "exact class must be proven by byte-for-byte survival")
+
+
+def _reconcile_body_fidelity(field_fidelity: list[dict], per_claim: list[dict]) -> dict:
+    """Reconcile the aggregate `body` contract with per-claim reality.
+
+    Annotates the static body entry with an `observed` block: how many
+    contract-EXACT-eligible bodies were sampled, how many actually survived, and the
+    per-claim downgrades. The aggregate `exactly-preserved` holds ONLY when every
+    sampled representable body survived; otherwise the observed classification is
+    lossy. Returns the observed block (also stored on the entry)."""
+    representable = [pc for pc in per_claim
+                     if pc["body_class_reason"] not in _SAFETY_BODY_REASONS]
+    downgraded = [pc for pc in representable
+                  if pc["original_body_survived"] is not True]
+    survived = [pc for pc in representable
+                if pc["original_body_survived"] is True]
+    observed = {
+        "representable_bodies_sampled": len(representable),
+        "exactly_preserved": len(survived),
+        "downgraded_to_lossy": [
+            {"external_id": pc["external_id"], "reason": pc["body_class_reason"]}
+            for pc in downgraded],
+        "effective_classification": LOSSY if downgraded else EXACT,
+        "note": ("Aggregate 'exactly-preserved' holds ONLY when every sampled "
+                 "representable body survived byte-for-byte. Any body normalized "
+                 "(trailing whitespace) or truncated (a foreign bundle's embedded "
+                 "heading) is downgraded to lossy and listed above."),
+    }
+    for entry in field_fidelity:
+        if entry.get("field") == "body":
+            entry["observed"] = observed
+            break
+    return observed
 
 
 def _refs_to_ids(ref_strings) -> set:

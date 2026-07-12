@@ -125,3 +125,11 @@ an injection lure.
   redacted secret, a quarantined injection, idempotent re-import, a refused external-id
   overwrite of a promoted claim (canonical unchanged), and an agent-actor import that
   still lands only pending.
+- **Amendment (Stage 4 delimiter hardening).** `_extract_claim_text` now splits the
+  claim body at the exporter's explicit `<!-- okf:body-end -->` marker when present,
+  instead of guessing the boundary from the first `## Sources` / `## Superseded by` /
+  `## Contradicts` heading. A body that itself contains such a heading therefore
+  survives byte-for-byte rather than being truncated. The header-cutting heuristic is
+  retained only as a tolerant fallback for a foreign bundle that lacks the marker.
+  Behavior for marker-less test/foreign bundles is unchanged. See `docs/OKF.md` and
+  ADR 0007 §4a.

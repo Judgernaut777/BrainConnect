@@ -53,6 +53,7 @@ from pathlib import Path
 from ..db import Repo
 from ..scopes import Scope
 from .. import candidates as candmod, ingest, refs, safety, util
+from .export import BODY_END_MARKER
 from .validate import (ValidationLimits, _Frontmatter, _split_frontmatter,
                        validate_bundle)
 from .yamlfmt import split_frontmatter
@@ -63,9 +64,10 @@ from .yamlfmt import split_frontmatter
 # an AgentConnect attempt pointer or a plain capture.
 _REF_PREFIX = "okf:"
 
-# Section headers the exporter appends after a claim body. When we recover the
-# claim text from a document we cut at the first of these — they are bundle
-# scaffolding (links back into the bundle), not part of the claim.
+# Section headers the exporter appends after a claim body. Used ONLY as a tolerant
+# fallback for a foreign bundle that lacks the explicit `BODY_END_MARKER` boundary;
+# an exporter-produced document is split on the marker instead, so a claim body that
+# itself contains one of these headings survives intact rather than being truncated.
 _SCAFFOLD_HEADERS = ("## Sources", "## Superseded by", "## Contradicts")
 
 # Structural frontmatter fields we retain on the candidate as "original frontmatter
@@ -185,26 +187,38 @@ def _parse_front(text: str, limits: ValidationLimits) -> dict:
     return front if isinstance(front, dict) else {}
 
 
-def _extract_claim_text(text: str) -> str:
-    """Recover the claim text from a claim document body.
-
-    Drops the leading `# title` heading the exporter writes and cuts at the first
-    bundle-scaffolding section (`## Sources`, etc.). Tolerant: if the document does
-    not follow the exporter's shape, the whole post-frontmatter body is returned —
-    it is untrusted data either way, and a human reviews it before promotion.
-    """
-    try:
-        _front, body = split_frontmatter(text)
-    except ValueError:
-        body = text
-    lines = body.split("\n")
+def _body_start(lines: list[str]) -> int:
+    """Index of the first body line, past leading blanks and the `# title` heading."""
     i = 0
     while i < len(lines) and lines[i].strip() == "":
         i += 1
     if i < len(lines) and lines[i].startswith("# "):
         i += 1
+    return i
+
+
+def _extract_claim_text(text: str) -> str:
+    """Recover the claim text from a claim document body.
+
+    Drops the leading `# title` heading the exporter writes. The claim/scaffold
+    boundary is taken from the explicit `BODY_END_MARKER` the exporter writes after
+    every body: everything from the marker onward is bundle scaffolding, never claim
+    text. This is unambiguous even when the claim body itself contains a `## Sources`
+    heading. A foreign bundle that predates / omits the marker falls back to the
+    tolerant heuristic of cutting at the first scaffolding heading. Either way the
+    result is untrusted data a human reviews before promotion.
+    """
+    try:
+        _front, body = split_frontmatter(text)
+    except ValueError:
+        body = text
+    if BODY_END_MARKER in body:
+        body = body.split(BODY_END_MARKER, 1)[0]
+        lines = body.split("\n")
+        return "\n".join(lines[_body_start(lines):]).strip()
+    lines = body.split("\n")
     out: list[str] = []
-    for ln in lines[i:]:
+    for ln in lines[_body_start(lines):]:
         if ln.strip() in _SCAFFOLD_HEADERS:
             break
         out.append(ln)

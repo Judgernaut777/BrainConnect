@@ -69,7 +69,7 @@ live under the `brainconnect:` frontmatter key.
 |---|---|
 | claim id | `brainconnect.id` (e.g. `claim_4`) |
 | derived title | `title` (front) + `# ` heading — from the *safe* body |
-| claim text | document body (masked or withheld per safety; see below) |
+| claim text | document body, terminated by an explicit `<!-- okf:body-end -->` marker (masked or withheld per safety; see below) |
 | tags | `tags` (front) |
 | scope | `brainconnect.scope` (e.g. `repo:my-app`, `global`) |
 | status | `brainconnect.status` (`promoted`/`pending`/`superseded`/`contradicted`) |
@@ -417,7 +417,7 @@ Every mapping-table field is classified as exactly one of:
 |---|---|---|
 | `id` | mapped | source claim id → candidate `source_ref` `okf:<id>` + `metadata.external_id`; not re-used as a claim id (imported side is a new pending candidate) |
 | `title` | intentionally-omitted | derived from the safe body on export; not retained on import (a free-text title could smuggle a secret); re-derivable from the body |
-| `body` | exactly-preserved | a clean body imports verbatim as the candidate text. **Degrades under safety:** a redacted secret → **lossy** (masked only), a quarantined/injection body → **intentionally-omitted** (withheld, never exported) |
+| `body` | exactly-preserved *(best case, per-claim proven)* | a clean body imports verbatim as the candidate text — but `exactly-preserved` is emitted **per claim only when that body actually survived byte-for-byte** (the report proves it, and the `observed` block downgrades any body that did not). **Degrades under safety:** a redacted secret → **lossy** (masked only), a quarantined/injection body → **intentionally-omitted** (withheld, never exported). **Two representation transforms downgrade an otherwise clean body → lossy** — see "Known lossy body transforms" below |
 | `tags` | exactly-preserved | source tags survive as a subset of the candidate tags |
 | `scope` | mapped | retained as informational metadata; the **operator's** `--import-scope` governs the candidate, never the bundle |
 | `status` | governance-only | the status string is retained as metadata, but the candidate is always PENDING; promotion status is re-established only by a human |
@@ -451,6 +451,39 @@ supersession bookkeeping. The report lists these under `governance_concepts`.
   (no canonical claims created, every candidate pending).
 - **Idempotent.** A repeat round-trip creates no new candidates (proven in the report
   as `no_duplication_on_repeat_import`).
+
+### Known lossy body transforms
+
+`exactly-preserved` for `body` is **proven per claim, never assumed**. The report
+computes `original_body_survived` (does the source text appear byte-for-byte in the
+imported candidate text?) and derives the body class from it: a body that is neither
+withheld nor redacted is `exactly-preserved` **only if** it survived, otherwise it is
+downgraded to `lossy` with a recorded `body_class_reason`. A hard honesty guard
+(`_assert_body_honesty`, raising `RoundtripHonestyError`) makes it impossible to emit
+`exactly-preserved` for a body that did not survive. Two transforms are known:
+
+- **Trailing-whitespace normalization** (`body_class_reason: "normalized"`). The
+  exporter right-strips the body (`body.rstrip()`) and the importer strips the
+  recovered text, so trailing whitespace is normalized away. Such a body is honestly
+  reported **lossy**, not exactly-preserved. This is left as-is: preserving trailing
+  whitespace would fight Markdown cleanliness and determinism for no real gain.
+- **Embedded-heading ambiguity** (historically `body_class_reason:
+  "truncated-at-embedded-heading"`). A body that itself contained a `## Sources` /
+  `## Superseded by` / `## Contradicts` heading used to be **truncated on import**,
+  because the importer split the body at the first such heading — but the exporter
+  appends its *own* `## Sources` scaffolding after the body, so a human heading was an
+  ambiguous boundary. **This is now fixed by an explicit machine delimiter:** the
+  exporter writes an `<!-- okf:body-end -->` marker after every body, and the importer
+  cuts there instead of at a human heading. An exporter-produced body containing a
+  `## Sources` heading now survives byte-for-byte and is honestly `exactly-preserved`.
+  The header-cutting heuristic remains **only** as a tolerant fallback for a foreign
+  bundle that lacks the marker; such a bundle is reported lossy with this reason.
+
+The aggregate body row is reconciled with per-claim reality in
+`field_fidelity[body].observed`: `representable_bodies_sampled`, `exactly_preserved`,
+`downgraded_to_lossy` (external id + reason), and an `effective_classification` that
+is `lossy` whenever any sampled body was downgraded (best-case `exactly-preserved`
+holds only when *every* sampled representable body survived).
 
 ### The report
 

@@ -5317,6 +5317,17 @@ def _okf_roundtrip_checks():
                 return cid
 
             clean_id = _clm("The ledger is the single source of truth.")
+            # A clean body with TRAILING WHITESPACE: the export rstrip + import strip
+            # normalize it away, so it must be reported lossy, never exactly-preserved.
+            ws_id = _clm("A fact recorded with trailing whitespace.   ",
+                         st="repo", si="my-app")
+            # A clean body that itself contains a "## Sources" heading: the explicit
+            # body-end marker must keep it byte-for-byte (delimiter hardened), so it is
+            # honestly exactly-preserved rather than truncated on import.
+            emb_id = _clm(
+                "Design note about the sources layout.\n\n## Sources\n\n"
+                "The embedded heading is part of the claim body itself.",
+                st="repo", si="my-app")
             secret_id = _clm(f"The deploy key is {SECRET} for staging.",
                              st="repo", si="my-app")
             inj_id = _clm(INJECTION, st="repo", si="my-app", label="medium")
@@ -5417,6 +5428,49 @@ def _okf_roundtrip_checks():
               pc_by_id[clean_ref]["body_class"] == "exactly-preserved"
               and pc_by_id[clean_ref]["original_body_survived"] is True
               and pc_by_id[clean_ref]["imported_status"] == "pending")
+
+        # -- body fidelity is PROVEN, not asserted from safety membership --------
+        ws_ref = refsmod.claim(ws_id)
+        emb_ref = refsmod.claim(emb_id)
+        check("okf/roundtrip: a body with TRAILING WHITESPACE does NOT survive "
+              "byte-for-byte (export rstrip + import strip normalize it) -> reported "
+              "LOSSY with reason 'normalized', never exactly-preserved",
+              pc_by_id[ws_ref]["body_class"] == "lossy"
+              and pc_by_id[ws_ref]["body_class_reason"] == "normalized"
+              and pc_by_id[ws_ref]["original_body_survived"] is False)
+        check("okf/roundtrip: a body containing an embedded '## Sources' heading "
+              "SURVIVES byte-for-byte via the explicit body-end marker (delimiter "
+              "hardened) -> honestly exactly-preserved, not truncated",
+              pc_by_id[emb_ref]["body_class"] == "exactly-preserved"
+              and pc_by_id[emb_ref]["body_class_reason"] == "byte-for-byte"
+              and pc_by_id[emb_ref]["original_body_survived"] is True)
+        check("okf/roundtrip: NO per-claim body is ever reported exactly-preserved "
+              "while original_body_survived is not True (data-driven honesty guard)",
+              all(not (p["body_class"] == "exactly-preserved"
+                       and p["original_body_survived"] is not True)
+                  for p in d["per_claim"])
+              and d["honesty"]["exact_body_requires_survival"] is True)
+        check("okf/roundtrip: the aggregate body view is RECONCILED with per-claim "
+              "reality — observed classification is lossy because a sampled body was "
+              "downgraded, and that downgrade is listed",
+              by_field["body"]["observed"]["effective_classification"] == "lossy"
+              and any(x["reason"] == "normalized"
+                      for x in by_field["body"]["observed"]["downgraded_to_lossy"])
+              and d["honesty"]["clean_bodies_all_exactly_preserved"] is False)
+
+        # -- the honesty guard is a hard invariant, not just descriptive ---------
+        from brainconnect.okf.roundtrip import (
+            _assert_body_honesty as _abh, RoundtripHonestyError as _RHE,
+            EXACT as _EXACT)
+        _guard_fired = False
+        try:
+            _abh([{"external_id": "claim_x", "body_class": _EXACT,
+                   "original_body_survived": False}])
+        except _RHE:
+            _guard_fired = True
+        check("okf/roundtrip: the honesty guard REJECTS an exact-claim without "
+              "byte-for-byte survival (exactly-preserved can never be emitted unproven)",
+              _guard_fired)
         check("okf/roundtrip: NEITHER the raw secret NOR the raw injection appears "
               "anywhere in the fidelity report (no unsafe value leaks into the report)",
               SECRET not in report_text and INJECTION not in report_text)
