@@ -4215,6 +4215,9 @@ def main():
     # ---------------- Performance capture (ADR 0008 Lane 7) ------------------
     _perfcapture_checks()
 
+    # ---------------- Agent-role assignment (ADR 0008 Lane 6) ----------------
+    _roles_checks()
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
@@ -5244,6 +5247,202 @@ def _delegation_checks():
     else:
         check("delegate LIVE smoke skipped (set BRAINCONNECT_LANE4_LIVE + "
               "BRAINCONNECT_AC_URL/BRAINCONNECT_CC_URL to run it)", True)
+
+
+def _roles_checks():
+    """Agent-role assignment — recommend + record (ADR 0008 Lane 6).
+
+    BC MAPS a plan's role requirements to existing AgentConnect model-manager
+    profiles (data-driven) and RECORDS the assignment as PENDING provenance; AC
+    executes and — with Decima — enforces ownership/independence. Verified here:
+    the role→profile map is DETERMINISTIC + data-driven (no branch on role name)
+    and only names real AC profiles / registry tiers; an unknown role is
+    FAIL-CLOSED (refused, never mapped); the assignment is recorded PENDING-only
+    and an agent/worker CANNOT self-promote it; a reviewer/implementer profile
+    collision is FLAGGED as a recommendation; BC makes NO model call and spawns
+    nothing; and a normal assignment COMPOSES with the Lane-4 delegation decision.
+    """
+    print("[roles] Lane 6: map plan roles -> AC profiles, flag reviewer "
+          "independence, record PENDING provenance; AC executes + enforces")
+    import inspect as _inspect
+    from brainconnect import roles as rolesmod
+    from brainconnect import delegate as dmod
+    from brainconnect import registry as regmod, candidates as candmod, api as apimod
+    from brainconnect.db import Repo
+
+    rlroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-lane6-")))
+
+    # -- the map is DATA-DRIVEN and DETERMINISTIC --------------------------------
+    supported = {"implementer", "test_reviewer", "security_reviewer",
+                 "documentation_reviewer", "verifier", "research_agent",
+                 "integration_agent"}
+    check("roles: every role from the brief is supported by the DATA table",
+          set(rolesmod.SUPPORTED_ROLES) == supported)
+    t1 = rolesmod.role_table()
+    t2 = rolesmod.role_table()
+    check("roles: the role->profile table is deterministic (two reads identical, "
+          "sorted by role)",
+          t1 == t2 and [m["role"] for m in t1] == sorted(supported))
+    # Every mapping names a REAL AgentConnect profile and a REAL registry tier —
+    # the mapping is data validated against the shipped vocabularies, not invented.
+    tier_names = {t.name for t in regmod.SEED_TIERS}
+    check("roles: every role maps to an existing AC model-manager profile "
+          "(general_coder/coding_specialist/review_worker/critic)",
+          all(m["ac_profile"] in rolesmod.AC_PROFILES for m in t1)
+          and rolesmod.AC_PROFILES ==
+          {"general_coder", "coding_specialist", "review_worker", "critic"})
+    check("roles: every role maps to a real Lane-1 registry capability tier "
+          "(so a role assignment composes with the registry + delegation)",
+          all(m["capability_class"] in tier_names for m in t1))
+    # DATA-DRIVEN, not a role-name branch: assignment is a pure lookup, and the
+    # module source contains no `if role ==`/`elif role ==` name dispatch.
+    _src = _inspect.getsource(rolesmod)
+    check("roles: the mapping is data-driven — the source has no if/elif branch on "
+          "a specific role name (resolution is a table lookup)",
+          'role == "implementer"' not in _src
+          and "role == 'implementer'" not in _src
+          and 'elif role ==' not in _src)
+
+    # -- a normal assignment records PENDING provenance, NOT trusted -------------
+    with Repo.open(start=rlroot) as r:
+        res = rolesmod.assign_roles(
+            r, "task-roles", ["implementer", "test_reviewer", "security_reviewer",
+                              "verifier", "documentation_reviewer", "research_agent",
+                              "integration_agent"])
+    check("roles: a normal assignment maps all 7 roles, refuses none, ok=True",
+          res.ok is True and len(res.assignments) == 7 and res.refused_roles == [])
+    check("roles: assignments are deterministically ordered by role name",
+          [a["role"] for a in res.assignments] == sorted(supported))
+    check("roles: implementer -> coding_specialist, verifier -> critic, "
+          "test_reviewer -> review_worker (data-driven mapping)",
+          {a["role"]: a["ac_profile"] for a in res.assignments}["implementer"]
+          == "coding_specialist"
+          and {a["role"]: a["ac_profile"] for a in res.assignments}["verifier"]
+          == "critic"
+          and {a["role"]: a["ac_profile"] for a in res.assignments}["test_reviewer"]
+          == "review_worker")
+    with Repo.open(start=rlroot) as r:
+        prov = candmod.get(r, refsmod.parse(res.provenance_ref, refsmod.CANDIDATE))
+        n_claims = r.one("SELECT COUNT(*) n FROM claims")["n"]
+    check("roles: the assignment is recorded as a PENDING candidate (provenance), "
+          "never a trusted/promoted claim",
+          prov["status"] == "pending"
+          and prov["metadata"].get("provenance_only") is True
+          and prov["metadata"].get("trusted") is False
+          and "role-assignment" in prov["tags"]
+          and "orchestration-decision" in prov["tags"])
+    check("roles: recording the assignment auto-promoted NOTHING (no claims exist)",
+          n_claims == 0)
+    check("roles: the recorded metadata carries the full assignment (profiles + "
+          "independence) for later explainability",
+          prov["metadata"]["assignment"]["assignments"][1]["role"] == "implementer"
+          and prov["metadata"]["kind"] == "role-assignment")
+
+    # -- an agent / worker CANNOT self-promote the recorded assignment -----------
+    def _promote_as(reviewer_type):
+        with Repo.open(start=rlroot) as r:
+            apimod.promote(r, res.provenance_ref, reviewer="self", confidence="high",
+                           scope="task:task-roles", reviewer_type=reviewer_type)
+    check("roles: a WORKER cannot self-promote the recorded role-assignment "
+          "(promotion is human/librarian-only)",
+          _raises(candmod.ReviewerNotPermitted, _promote_as, "worker"))
+    check("roles: an AGENT cannot self-promote the recorded role-assignment",
+          _raises(candmod.ReviewerNotPermitted, _promote_as, "agent"))
+    with Repo.open(start=rlroot) as r:
+        check("roles: the refused self-promotions left ZERO promoted claims",
+              r.one("SELECT COUNT(*) n FROM claims")["n"] == 0)
+
+    # -- reviewer independence: distinct-profile default recommends, same-profile
+    #    override FLAGS a collision (a recommendation, never BC enforcement) -----
+    check("roles: with the DEFAULT data, no reviewer/verifier shares the "
+          "implementer's profile — independence-clean, zero collisions",
+          res.collisions == [] and len(res.independence) == 4
+          and all(f["same_profile"] is False for f in res.independence))
+    with Repo.open(start=rlroot) as r:
+        collided = rolesmod.assign_roles(
+            r, "task-collide", ["implementer", "security_reviewer"],
+            profile_overrides={"security_reviewer": "coding_specialist"})
+    check("roles: a reviewer re-pointed onto the implementer's profile is FLAGGED "
+          "as an independence collision (same_profile=True)",
+          len(collided.collisions) == 1
+          and collided.collisions[0]["reviewer_role"] == "security_reviewer"
+          and collided.collisions[0]["implementer_role"] == "implementer"
+          and collided.collisions[0]["same_profile"] is True
+          and "MUST assign a DISTINCT agent" in collided.collisions[0]["recommendation"])
+    # It is a RECOMMENDATION: BC still records the (collided) assignment and does
+    # NOT itself refuse it or spawn anything — AC/Decima enforce at execution.
+    check("roles: the collision is a RECOMMENDATION recorded in provenance — BC "
+          "still maps the roles and records (does not enforce/refuse)",
+          collided.ok is True and len(collided.assignments) == 2
+          and collided.provenance_ref is not None)
+
+    # -- unknown role is FAIL-CLOSED (refused, never silently mapped) ------------
+    with Repo.open(start=rlroot) as r:
+        unk = rolesmod.assign_roles(
+            r, "task-unknown", ["implementer", "wizard", "orchestrator"])
+    check("roles: an unknown role is FAIL-CLOSED — refused with a reason, never "
+          "given a profile; ok=False",
+          unk.ok is False
+          and {x["role"] for x in unk.refused_roles} == {"wizard", "orchestrator"}
+          and all("refused, not mapped" in x["reason"] for x in unk.refused_roles)
+          and [a["role"] for a in unk.assignments] == ["implementer"]
+          and not any(a["role"] in {"wizard", "orchestrator"} for a in unk.assignments))
+    # A fully-unknown request maps NOTHING (never a silent empty-but-ok result).
+    with Repo.open(start=rlroot) as r:
+        allbad = rolesmod.assign_roles(r, "task-allbad", ["ghost", "phantom"])
+    check("roles: a request of only unknown roles maps nothing and is not ok "
+          "(fail-closed, no silent success)",
+          allbad.ok is False and allbad.assignments == []
+          and len(allbad.refused_roles) == 2)
+    # A bad override (unknown profile / unknown role) is a hard fail-closed error.
+    check("roles: an override to a non-existent AC profile is refused (RoleError, "
+          "fail-closed — never silently applied)",
+          _raises(rolesmod.RoleError, rolesmod.assign_roles, None, "t",
+                  ["implementer"], profile_overrides={"implementer": "gpt5"}))
+
+    # -- BC makes NO model call and spawns NOTHING -------------------------------
+    forbidden = ("subprocess", "socket", "urllib", "http", "requests",
+                 "os.system", "popen", "claude ", "--print", "asyncio")
+    check("roles: the module makes no model call and spawns nothing — its source "
+          "references no subprocess/socket/http/model-invocation primitive",
+          not any(tok in _src for tok in forbidden))
+    check("roles: assign_roles takes NO engine client / url / token parameter "
+          "(it never calls out to any engine or model)",
+          not ({"routing_client", "estimate_client", "url", "ac_url", "cc_url",
+                "token", "client"}
+               & set(_inspect.signature(rolesmod.assign_roles).parameters)))
+
+    # -- a normal assignment COMPOSES with the Lane-4 delegation decision --------
+    # The implementer role's capability_class is a real registry tier; feeding it
+    # to the Lane-4 delegate trigger yields a delegated decision. Role assignment
+    # (Lane 6) and delegation (Lane 4) compose on the same tier vocabulary.
+    class _FakeAC:
+        def route(self, ctx):
+            return {"task_id": ctx["task_id"],
+                    "decision": "route_to_local_resident_model",
+                    "selected_provider": "local-node-1", "selected_model": "qwen3-30b-a3b",
+                    "rejected_options": [], "policy_version": "v1", "scores": []}
+
+    class _FakeCC:
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": True, "selected_model": "qwen3-30b-a3b",
+                    "runtime": "llama.cpp", "loaded": True,
+                    "estimated_queue_seconds": 0.0, "estimated_tokens_per_second": 40.0,
+                    "estimated_quality": 0.8,
+                    "reason": {"provider_id": "wiki-llama",
+                               "placement_class": "local_resident"}}
+
+    impl = next(a for a in res.assignments if a["role"] == "implementer")
+    with Repo.open(start=rlroot) as r:
+        deleg = dmod.delegate(r, {
+            "task_id": "task-roles", "capability_class": impl["capability_class"],
+            "privacy_tier": "repo_sensitive"},
+            routing_client=_FakeAC(), estimate_client=_FakeCC(), record=False)
+    check("roles: an assigned role's capability_class feeds the Lane-4 delegation "
+          "trigger and yields a delegated decision (Lane 6 composes with Lane 4)",
+          impl["capability_class"] == "high-capability-local"
+          and deleg.delegated is True and deleg.outcome_class == "delegated"
+          and deleg.request["capability_class"] == impl["capability_class"])
 
 
 def _perfcapture_checks():

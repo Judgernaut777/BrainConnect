@@ -21,7 +21,7 @@ everywhere.
 | 3 | Transport for the registry (BC↔AC/CC memory link, `:8787`) | **A** (claim endpoint) + **B** (consumption) | BC + AC | ✅ **BC side done** — read-only `GET /registry` (+ `/registry/capabilities` alias) on the existing `:8787` server serves ONLY trusted, human-promoted capability claims (`registry.trusted_view`), bearer-authed like every other route, pending/squatted facts excluded, no fabricated numbers, deterministic. See [REGISTRY.md §6](REGISTRY.md). **AC side delegated to the AgentConnect repo:** AC's `RoutingEngine` pulls this endpoint and weights it in place of self-conferred `learned_quality` — out of scope for BC. | L1 |
 | 4 | Capability router + warm-aware swap-minimizing scheduler | **B** (fully) | AC (routing/residency) + CC (placement) | ✅ **done** — a thin BC delegation trigger (`cli/brainconnect/delegate.py` + `delegate_clients.py`, `brainconnect delegate`, [DELEGATION.md](DELEGATION.md)) assembles a request from **trusted** registry claims + a workload, calls AC `RoutingEngine.route` and CC `/route/estimate` through injectable clients, and records the returned decision + rationale as **PENDING** decision-provenance (never auto-promoted). Deterministic no-SPOF fallback when AC/CC are down/malformed/hostile; privacy is clamped and never widened. **Zero routing/placement math in BC.** AC's decision-only HTTP endpoint is the one gap (recon): BC binds the faithful `RoutingContext -> RoutingDecision` shape via an injectable client and smokes against a fake. | L3, L2 |
 | 5 | Unified knowledge abstraction (adapters → WikiBrain → graph → OKF → external), federating Decima knowledge | **A** (core) | BC | Extend LEDGER_SPEC §8 `RetrievalBackend` federation with a Decima-knowledge backend that reads `projections/knowledge.py` via the L2 contract and honors `instruction_eligible` exactly as BC honors `trusted`. **Federate, do not fork.** | L2 |
-| 6 | Multi-model collaboration roles (planning/coding/reviewer/verifier/docs) + independent verification | **B** (fully) | AC (D executes) | BC maps a plan's role requirements to existing AC model-manager profiles (`general_coder`/`coding_specialist`/`review_worker`/`critic`) and triggers AC `RouterService` decompose→execute→synthesize with `review.*` lifecycle; BC records the role-assignment as provenance. **No role engine/verifier in BC.** | L4 |
+| 6 | Multi-model collaboration roles (planning/coding/reviewer/verifier/docs) + independent verification | **B** (fully) | AC (D executes) | ✅ **done** — BC MAPS a plan's role requirements to existing AC model-manager profiles (`general_coder`/`coding_specialist`/`review_worker`/`critic`) via a data-driven table and RECORDS the role-assignment as **PENDING** provenance; it flags reviewer/implementer profile collisions as a **recommendation**. AgentConnect EXECUTES (triggers `RouterService` decompose→execute→synthesize with the `review.*` lifecycle) and, with Decima, ENFORCES ownership/independence. BC spawns nothing, makes zero model calls, assigns no ownership. Code `cli/brainconnect/roles.py`, CLI `brainconnect roles`, contract [ROLES.md](ROLES.md). **No role engine/verifier in BC.** | L4 |
 | 7 | Performance (prompt caching, benchmarking, telemetry, queue analytics, load prediction) feeding the registry | **B** (measurement) + **A** (capture/promote loop) | CC/AC (measure) → BC (trusted capture) | ✅ **BC capture side done** — `cli/brainconnect/perfcapture.py` + `brainconnect perfcapture` + [PERFCAPTURE.md](PERFCAPTURE.md). Reads CC's side-effect-free telemetry (`/health`, `/models`, `/models/loaded`, optional `/route/estimate` rationale) through an injectable bounded client and files each observed model availability/perf fact as a **PENDING** `model_performance` candidate — source-labelled (`kind` `measured` vs `estimate`), `model:`-scoped, safety-scanned, idempotent (unforgeable per-observation fingerprint), **never auto-promoted**. The deployed-model refresh is a captured candidate, not a mutation of the trusted claim. **Zero model calls; no fabricated numbers.** MEASUREMENT stays delegated to CC/AC. | L1, L4 |
 | 8 | Observability (queued work, active agents, utilization, provider health, routing decisions, timelines, token accounting, swap history) | **B** (fully) | AC (event model) | BC emits its orchestration decisions (registry promotion, delegation trigger, role assignment) **into** the existing `AgentObservabilityProvider` using the shipped `EventType` vocabulary. **No parallel event stream/timeline/token ledger in BC.** | L4, L6 |
 
@@ -105,6 +105,22 @@ everywhere.
   `cli/brainconnect/perfcapture.py` + `cli/brainconnect/delegate_clients.py`
   (`HttpTelemetryClient`), CLI `brainconnect perfcapture`, contract in
   [PERFCAPTURE.md](PERFCAPTURE.md).
-- **Lanes 2, 5, 6, 8:** planned. Lanes 4 and 7 are shipped; Lane 5 (the unified
+- **Lane 6 (agent-role assignment):** ✅ complete — BC MAPS a plan's role
+  requirements (implementer / test_reviewer / security_reviewer /
+  documentation_reviewer / verifier / research_agent / integration_agent) to
+  existing AgentConnect model-manager profiles through a deterministic DATA table
+  (`ROLE_TABLE`; nothing branches on a role name, and a swap is a data edit —
+  provider portability), and RECORDS the assignment as **PENDING** provenance
+  (never trusted, never self-promoted). An unknown role is **fail-closed**
+  (refused, never mapped). Reviewer independence is a **recommendation**: BC flags
+  when a reviewer/verifier would share the implementer's profile so an
+  operator/AC can preserve independent review — but BC does not enforce it,
+  spawn workers, execute, or assign ownership. AgentConnect executes
+  (`RouterService` decompose→execute→synthesize, `review.*`) and, with Decima,
+  enforces ownership/independence/concurrency. A role assignment composes with the
+  Lane-4 delegation trigger on the shared Lane-1 tier vocabulary. Code in
+  `cli/brainconnect/roles.py`, CLI `brainconnect roles`, contract in
+  [ROLES.md](ROLES.md).
+- **Lanes 2, 5, 8:** planned. Lanes 4, 6, and 7 are shipped; Lane 5 (the unified
   knowledge abstraction federating Decima knowledge) is next, pending the Lane 2
   Decima read-contract.

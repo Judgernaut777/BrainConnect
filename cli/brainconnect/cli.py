@@ -25,6 +25,7 @@ from . import backup as backupmod
 from . import delegate as delegatemod
 from . import delegate_clients as delegateclients
 from . import perfcapture as perfcapturemod
+from . import roles as rolesmod
 
 # Ledger errors that are a user mistake at the terminal, not a bug: print the
 # message and exit non-zero rather than dumping a traceback.
@@ -1279,6 +1280,59 @@ def cmd_delegate(args):
               "not auto-promoted)")
 
 
+def cmd_roles(args):
+    """The Lane-6 agent-role assignment (ADR 0008): map a plan's role requirements
+    to existing AgentConnect model-manager profiles and RECORD the assignment as
+    PENDING provenance. BC recommends + records; AgentConnect executes and enforces
+    ownership/independence. Zero model calls; spawns nothing. Bare `roles` (or
+    `roles list`) is the deterministic read surface for the role→profile table."""
+    rcmd = getattr(args, "rolecmd", None)
+    if rcmd == "assign":
+        overrides: dict[str, str] = {}
+        for raw in (args.profile_override or []):
+            if "=" not in raw:
+                sys.exit(f"error: --profile-override must be role=profile, got {raw!r}")
+            role, profile = raw.split("=", 1)
+            overrides[role.strip()] = profile.strip()
+        with Repo.open() as repo:
+            try:
+                result = rolesmod.assign_roles(
+                    repo, args.task_id, args.role or [], profile_overrides=overrides,
+                    record=not args.no_record, proposed_by=args.by,
+                    proposed_by_type=args.by_type)
+            except rolesmod.RoleError as e:
+                sys.exit(f"error: {e}")
+            out = result.as_dict()
+            out["provenance_ref"] = result.provenance_ref
+        if _emit(out, args.json):
+            return
+        print(f"task {result.task_id}: {'ok' if result.ok else 'REFUSED (unknown role)'} "
+              f"— {len(result.assignments)} role(s) mapped")
+        for a in result.assignments:
+            print(f"  {a['role']:<22} -> {a['ac_profile']:<18} "
+                  f"tier={a['capability_class']} kind={a['role_kind']}"
+                  + ("  [overridden]" if a.get("overridden") else ""))
+        for r in result.refused_roles:
+            print(f"  {str(r['role']):<22} -> REFUSED (fail-closed): {r['reason']}")
+        for f in result.independence:
+            flag = "COLLISION" if f["same_profile"] else "recommend"
+            print(f"  independence [{flag}]: {f['recommendation']}")
+        if result.provenance_ref:
+            print(f"  provenance    : {result.provenance_ref} (PENDING; not trusted, "
+                  "not auto-promoted; AC executes + enforces)")
+        return
+    # default (rolecmd is None or "list"): the deterministic read surface.
+    table = rolesmod.role_table()
+    if _emit(table, args.json):
+        return
+    print("agent role -> AgentConnect profile (data-driven; AC executes, BC records):")
+    for m in table:
+        print(f"  {m['role']:<22} -> {m['ac_profile']:<18} "
+              f"tier={m['capability_class']:<22} kind={m['role_kind']}"
+              + ("  [reviews implementer]" if m["reviews"] else "")
+              + ("  [implementer]" if m["primary_producer"] else ""))
+
+
 def cmd_perfcapture(args):
     """The Lane-7 performance-capture adapter (ADR 0008): read ComputeConnect
     telemetry and file each observed model availability/performance fact as a
@@ -1653,6 +1707,38 @@ def build_parser() -> argparse.ArgumentParser:
     sdg.add_argument("--by-type", dest="by_type", default="tool",
                      choices=candmod.PROPOSER_TYPES)
     addj(sdg); sdg.set_defaults(func=cmd_delegate)
+
+    # roles: the Lane-6 agent-role assignment (ADR 0008). Maps a plan's role
+    # requirements to existing AgentConnect model-manager profiles and records the
+    # assignment as PENDING provenance. BC recommends + records; AC executes and
+    # enforces ownership/independence. No role engine / verifier / worker spawn in BC.
+    srl = sub.add_parser(
+        "roles",
+        help="map plan agent-roles to AgentConnect profiles + flag reviewer "
+             "independence, record the assignment as provenance (ADR 0008 Lane 6)")
+    rlsub = srl.add_subparsers(dest="rolecmd")
+    rll = rlsub.add_parser(
+        "list", help="the deterministic role->AC-profile mapping table")
+    addj(rll); rll.set_defaults(func=cmd_roles)
+    rla = rlsub.add_parser(
+        "assign",
+        help="map requested roles to AC profiles, flag reviewer/implementer "
+             "collisions, record as PENDING provenance (unknown role -> fail-closed)")
+    rla.add_argument("task_id")
+    rla.add_argument("--role", action="append",
+                     help=f"a requested agent role (repeatable); supported: "
+                          f"{', '.join(rolesmod.SUPPORTED_ROLES)}")
+    rla.add_argument("--profile-override", dest="profile_override", action="append",
+                     help="role=profile; re-point a role at a different AC profile "
+                          "(data-driven provider portability). Repeatable.")
+    rla.add_argument("--no-record", action="store_true",
+                     help="do not file the provenance candidate")
+    rla.add_argument("--by", default="role-assigner", help="who is proposing")
+    rla.add_argument("--by-type", dest="by_type", default="tool",
+                     choices=candmod.PROPOSER_TYPES,
+                     help="proposer type (a proposer, never a promoter)")
+    addj(rla); rla.set_defaults(func=cmd_roles)
+    addj(srl); srl.set_defaults(func=cmd_roles, rolecmd=None)
 
     # perfcapture: the Lane-7 performance-capture adapter (ADR 0008). Reads
     # ComputeConnect telemetry and files each observed model availability/perf fact
