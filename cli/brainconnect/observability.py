@@ -27,8 +27,10 @@ The hard boundary this module keeps (ADR 0008 / CLAUDE.md):
   ``metadata`` dict restricted BY CONSTRUCTION to small scalars (a decision
   class, counts, booleans, enum strings). A prompt, a completion, a raw
   request/decision body, a URL (which may carry credentials), or any private
-  context is never routed here — non-scalar metadata values are dropped and
-  strings are length-bounded before the event is built.
+  context is never routed here — non-scalar metadata values are dropped, and
+  BOTH metadata strings AND the correlation-id fields are ``str``-coerced and
+  length-bounded (to ``_MAX_STR``) before the event is built, so a future caller
+  cannot route large/engine-derived content through an id kwarg either.
 """
 
 from __future__ import annotations
@@ -120,9 +122,26 @@ def _scrub_metadata(md: Optional[dict]) -> dict:
     return out
 
 
+def _bound_id(v: Any) -> Optional[str]:
+    """``str``-coerce and length-bound a correlation-id field (defense in depth).
+
+    ``None`` stays ``None`` (an absent optional id). Any other value is coerced to
+    ``str`` and truncated to ``_MAX_STR`` — the SAME bound metadata strings get —
+    so no id kwarg can smuggle a large/engine-derived payload into an event."""
+    if v is None:
+        return None
+    return str(v)[:_MAX_STR]
+
+
 def _event_id(trace_id: str, sequence: int, event_type: str) -> str:
-    """Deterministic idempotency key: same (trace, sequence, type) -> same id, so
-    a re-emit of the same transition dedupes exactly as AC expects."""
+    """Derive the event_id from ``(trace_id, sequence, event_type)``.
+
+    ``sequence`` is a per-trace monotonic counter (see :class:`Emitter`), so this
+    id is the POSITIONAL identity of a transition within a trace — it lines up
+    with AC's ``(trace_id, sequence)`` dedupe key for the same per-trace position.
+    It is NOT stable across a re-emit: each ``emit`` call advances the per-trace
+    counter, yielding a fresh sequence and thus a fresh id, so BC does not itself
+    collapse re-emits — ordering/positional dedupe is left to AC's provider."""
     h = hashlib.sha1(f"{trace_id}:{sequence}:{event_type}".encode("utf-8"))
     return "bc-" + h.hexdigest()[:24]
 
@@ -208,8 +227,12 @@ class _AgentConnectProviderSink(ObservabilitySink):
 
 
 class Emitter:
-    """Assigns a monotonic per-emitter ``sequence``, builds a normalized event,
-    and fans it out to a sink. Emission NEVER raises (advisory policy)."""
+    """Assigns a monotonic per-``trace_id`` ``sequence``, builds a normalized
+    event, and fans it out to a sink. Emission NEVER raises (advisory policy).
+
+    ``sequence`` counts PER TRACE (not per emitter), matching AC's documented
+    model: ``sequence`` is a "monotonic per-trace counter" and the positional
+    dedupe identity is ``(trace_id, sequence)``. Two traces each start at 1."""
 
     def __init__(self, sink: Optional[ObservabilitySink] = None, *,
                  agent_id: str = "brainconnect",
@@ -220,7 +243,7 @@ class Emitter:
         self.provider_label = provider_label
         self._clock = clock
         self._lock = threading.RLock()
-        self._seq = 0
+        self._seq_by_trace: dict[str, int] = {}
 
     @property
     def enabled(self) -> bool:
@@ -242,10 +265,10 @@ class Emitter:
         inspection/tests) or ``None`` if it was swallowed. A sink failure — or any
         error building the event — is logged and never propagates."""
         try:
+            trace = _bound_id(trace_id) or ""
             with self._lock:
-                self._seq += 1
-                seq = self._seq
-            trace = str(trace_id)
+                seq = self._seq_by_trace.get(trace, 0) + 1
+                self._seq_by_trace[trace] = seq
             md = _scrub_metadata(metadata)
             if decision_class is not None:
                 md.setdefault("decision_class", str(decision_class)[:_MAX_STR])
@@ -257,17 +280,17 @@ class Emitter:
                 "state": _DEFAULT_STATE.get(event_type, "unknown"),
                 "outcome": outcome,
                 "trace_id": trace,
-                "task_id": task_id,
-                "delegation_id": delegation_id,
+                "task_id": _bound_id(task_id),
+                "delegation_id": _bound_id(delegation_id),
                 "parent_delegation_id": None,
-                "subtask_id": subtask_id,
-                "session_id": session_id,
-                "run_id": run_id,
-                "review_id": review_id,
-                "agent_id": self.agent_id,
-                "agent_role": agent_role,
-                "provider": self.provider_label,
-                "workspace_id": workspace_id,
+                "subtask_id": _bound_id(subtask_id),
+                "session_id": _bound_id(session_id),
+                "run_id": _bound_id(run_id),
+                "review_id": _bound_id(review_id),
+                "agent_id": _bound_id(self.agent_id),
+                "agent_role": _bound_id(agent_role),
+                "provider": _bound_id(self.provider_label),
+                "workspace_id": _bound_id(workspace_id),
                 "metadata": md,
             }
             self.sink.append_event(event)

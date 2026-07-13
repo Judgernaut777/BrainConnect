@@ -6072,6 +6072,15 @@ def _observability_checks():
               _ace.event_type == _ACET.subtask_routed
               and _ace.model_dump(mode="json")["event_type"] == "subtask.routed"
               and _ace.trace_id == "rt")
+        # FIX 3: pin the FIELD SET itself, not just the values. BC's _EVENT_FIELDS
+        # is a mirrored copy of AgentObservationEvent's field names; assert it
+        # EQUALS AC's model_fields so an AC field rename/addition is CAUGHT here
+        # (pydantic would otherwise silently ignore an extra key / default a
+        # missing one, hiding the drift).
+        check("observability CONFORMANCE PIN: BC's _EVENT_FIELDS set EQUALS "
+              "AgentObservationEvent's model field set (a field rename/addition in "
+              "AC is caught, not silently dropped/defaulted)",
+              set(obs._EVENT_FIELDS) == set(_ACEvent.model_fields.keys()))
         _conf_checked = True
     except ImportError:
         pass
@@ -6229,6 +6238,49 @@ def _observability_checks():
           "order) and event_id is a stable idempotency key",
           [e["sequence"] for e in all_ev] == sorted(e["sequence"] for e in all_ev)
           and len({e["event_id"] for e in all_ev}) == len(all_ev))
+
+    # FIX 1: sequence is a PER-TRACE monotonic counter (matching AC's documented
+    # "monotonic per-trace counter" + (trace_id, sequence) dedupe identity), not a
+    # per-emitter global. Three emits on one trace number 1,2,3; a different trace
+    # restarts at 1; and event_id tracks (trace_id, sequence, event_type).
+    seq_sink = MemSink()
+    seq_em = obs.Emitter(seq_sink)
+    _s1 = seq_em.emit(obs.EVT_DECISION_RECORDED, trace_id="seqT", task_id="a")
+    _s2 = seq_em.emit(obs.EVT_DECISION_RECORDED, trace_id="seqT", task_id="b")
+    _s3 = seq_em.emit(obs.EVT_MEMORY_CAPTURED, trace_id="seqT", task_id="c")
+    _o1 = seq_em.emit(obs.EVT_DECISION_RECORDED, trace_id="otherT", task_id="d")
+    check("observability FIX 1: sequence is a per-TRACE monotonic counter — "
+          "successive emits on the same trace number 1,2,3 and a different trace "
+          "restarts at 1 (matches AC's per-trace (trace_id, sequence) identity)",
+          [_s1["sequence"], _s2["sequence"], _s3["sequence"]] == [1, 2, 3]
+          and _o1["sequence"] == 1
+          and (_o1["trace_id"], _o1["sequence"]) != (_s1["trace_id"], _s1["sequence"]))
+    check("observability FIX 1: event_id is the positional identity — derived from "
+          "(trace_id, sequence, event_type); same position on the same trace yields "
+          "the same id, and a fresh emit (new sequence) yields a fresh id",
+          _s1["event_id"] == obs._event_id("seqT", 1, obs.EVT_DECISION_RECORDED)
+          and _s1["event_id"] != _s2["event_id"]
+          and _o1["event_id"] == obs._event_id("otherT", 1, obs.EVT_DECISION_RECORDED))
+
+    # FIX 2: correlation-id fields are str-coerced and length-bounded to _MAX_STR
+    # (same as metadata strings), so a future caller cannot route large/engine-
+    # derived content through an id kwarg. An oversized/ non-str id is truncated.
+    _big = "Z" * (obs._MAX_STR * 5)
+    id_em = obs.Emitter(MemSink(), agent_id=_big, provider_label=_big)
+    _bid = id_em.emit(obs.EVT_DECISION_RECORDED, trace_id=_big, task_id=_big,
+                      delegation_id=_big, subtask_id=_big, session_id=_big,
+                      run_id=_big, review_id=_big, workspace_id=_big,
+                      agent_role=_big)
+    _coerce = obs.Emitter(MemSink()).emit(obs.EVT_DECISION_RECORDED,
+                                          trace_id=12345, task_id=67890)
+    check("observability FIX 2: every correlation-id field is str-coerced and bound "
+          "to _MAX_STR (an oversized id is TRUNCATED, a non-str id is stringified) — "
+          "no id kwarg can smuggle a large/engine-derived payload into an event",
+          all(len(_bid[f]) == obs._MAX_STR for f in (
+              "trace_id", "task_id", "delegation_id", "subtask_id", "session_id",
+              "run_id", "review_id", "workspace_id", "agent_id", "agent_role",
+              "provider"))
+          and _coerce["trace_id"] == "12345" and _coerce["task_id"] == "67890")
 
     # =====================================================================
     # (4) A FAILING sink does NOT break the underlying orchestration operation.
