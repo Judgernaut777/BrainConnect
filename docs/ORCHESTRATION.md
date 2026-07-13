@@ -20,7 +20,7 @@ everywhere.
 | 2 | Published Decima capability-reasoning read-contract (planning/approvals/workspaces/knowledge/agents/artifacts) | **B** (surface lives in Decima) | Decima (BC consumes) | A versioned read-contract *in the Decima repo* stabilizing `projections.{tasks,approvals,agents,knowledge,activity}` with `instruction_eligible` exposed. BC codes against the contract, not Python objects. | none (parallel to L1) |
 | 3 | Transport for the registry (BC↔AC/CC memory link, `:8787`) | **A** (claim endpoint) + **B** (consumption) | BC + AC | ✅ **BC side done** — read-only `GET /registry` (+ `/registry/capabilities` alias) on the existing `:8787` server serves ONLY trusted, human-promoted capability claims (`registry.trusted_view`), bearer-authed like every other route, pending/squatted facts excluded, no fabricated numbers, deterministic. See [REGISTRY.md §6](REGISTRY.md). **AC side delegated to the AgentConnect repo:** AC's `RoutingEngine` pulls this endpoint and weights it in place of self-conferred `learned_quality` — out of scope for BC. | L1 |
 | 4 | Capability router + warm-aware swap-minimizing scheduler | **B** (fully) | AC (routing/residency) + CC (placement) | ✅ **done** — a thin BC delegation trigger (`cli/brainconnect/delegate.py` + `delegate_clients.py`, `brainconnect delegate`, [DELEGATION.md](DELEGATION.md)) assembles a request from **trusted** registry claims + a workload, calls AC `RoutingEngine.route` and CC `/route/estimate` through injectable clients, and records the returned decision + rationale as **PENDING** decision-provenance (never auto-promoted). Deterministic no-SPOF fallback when AC/CC are down/malformed/hostile; privacy is clamped and never widened. **Zero routing/placement math in BC.** AC's decision-only HTTP endpoint is the one gap (recon): BC binds the faithful `RoutingContext -> RoutingDecision` shape via an injectable client and smokes against a fake. | L3, L2 |
-| 5 | Unified knowledge abstraction (adapters → WikiBrain → graph → OKF → external), federating Decima knowledge | **A** (core) | BC | Extend LEDGER_SPEC §8 `RetrievalBackend` federation with a Decima-knowledge backend that reads `projections/knowledge.py` via the L2 contract and honors `instruction_eligible` exactly as BC honors `trusted`. **Federate, do not fork.** | L2 |
+| 5 | Unified knowledge abstraction (adapters → WikiBrain → graph → OKF → external), federating Decima knowledge | **A** (core) | BC | ✅ **done** — `cli/brainconnect/federation.py` (`DecimaKnowledgeBackend` + injectable `DecimaKnowledgeSource`) surfaces Decima knowledge at READ TIME via the L2 read-contract and honors `instruction_eligible` **exactly** as BC honors `trusted` (fail-closed: surfaced trusted only when the bit is a real `True`; untrusted is DATA, opt-in). **Federate, do not fork** — nothing is written to the BC ledger. Implemented as a **sibling read-time seam**, not a §8 backend: §8 `BackendCandidate`s are content-free and re-read by integer id from BC's `claims` table, so a foreign Decima `str` id would be dropped ([LEDGER_SPEC §8bis](LEDGER_SPEC.md)); Decima re-resolves its own items and BC merges them after native recall. Foreign text passes the SAME read-door safety pass; hostile/oversized data is bounded; optional + **non-fatal** (a missing/erroring source contributes nothing, `decima` never a required dependency); conformance-pinned to Decima's `READ_CONTRACT_VERSION`. Contract [FEDERATION.md](FEDERATION.md). | L2 |
 | 6 | Multi-model collaboration roles (planning/coding/reviewer/verifier/docs) + independent verification | **B** (fully) | AC (D executes) | ✅ **done** — BC MAPS a plan's role requirements to existing AC model-manager profiles (`general_coder`/`coding_specialist`/`review_worker`/`critic`) via a data-driven table and RECORDS the role-assignment as **PENDING** provenance; it flags reviewer/implementer profile collisions as a **recommendation**. AgentConnect EXECUTES (triggers `RouterService` decompose→execute→synthesize with the `review.*` lifecycle) and, with Decima, ENFORCES ownership/independence. BC spawns nothing, makes zero model calls, assigns no ownership. Code `cli/brainconnect/roles.py`, CLI `brainconnect roles`, contract [ROLES.md](ROLES.md). **No role engine/verifier in BC.** | L4 |
 | 7 | Performance (prompt caching, benchmarking, telemetry, queue analytics, load prediction) feeding the registry | **B** (measurement) + **A** (capture/promote loop) | CC/AC (measure) → BC (trusted capture) | ✅ **BC capture side done** — `cli/brainconnect/perfcapture.py` + `brainconnect perfcapture` + [PERFCAPTURE.md](PERFCAPTURE.md). Reads CC's side-effect-free telemetry (`/health`, `/models`, `/models/loaded`, optional `/route/estimate` rationale) through an injectable bounded client and files each observed model availability/perf fact as a **PENDING** `model_performance` candidate — source-labelled (`kind` `measured` vs `estimate`), `model:`-scoped, safety-scanned, idempotent (unforgeable per-observation fingerprint), **never auto-promoted**. The deployed-model refresh is a captured candidate, not a mutation of the trusted claim. **Zero model calls; no fabricated numbers.** MEASUREMENT stays delegated to CC/AC. | L1, L4 |
 | 8 | Observability (queued work, active agents, utilization, provider health, routing decisions, timelines, token accounting, swap history) | **B** (fully) | AC (event model) | BC emits its orchestration decisions (registry promotion, delegation trigger, role assignment) **into** the existing `AgentObservabilityProvider` using the shipped `EventType` vocabulary. **No parallel event stream/timeline/token ledger in BC.** | L4, L6 |
@@ -137,6 +137,28 @@ everywhere.
   Emission is **non-fatal** (a sink error is swallowed, never breaks the
   operation) and **optional** (BC fully functions with it off). Code in
   `cli/brainconnect/observability.py`, contract in [OBSERVABILITY.md](OBSERVABILITY.md).
-- **Lanes 2, 5:** planned. Lanes 4, 6, 7, and 8 are shipped; Lane 5 (the unified
-  knowledge abstraction federating Decima knowledge) is next, pending the Lane 2
-  Decima read-contract.
+- **Lane 5 (unified knowledge abstraction — federating Decima knowledge):** ✅
+  complete — BC surfaces **Decima's own knowledge** inside a recall pack at READ
+  TIME, read through Decima's published Lane-2 read-contract, and **never forks it**
+  into the BC ledger (nothing is written; a federated item vanishes when Decima
+  retracts it). It honors Decima's `instruction_eligible` bit **exactly** as BC
+  honors its own `trusted` bit: surfaced `trusted` only when the bit is a real
+  `True` (fail-closed on any disagreement), untrusted federated text is DATA and
+  opt-in (`trusted_only=false`) exactly like BC's own untrusted material. Foreign
+  provenance is untrusted input, so it passes the SAME read-door safety pass
+  (mask / withhold / quarantine); hostile/oversized data is bounded and
+  deterministically ordered. Implemented as a **sibling read-time seam**, not a §8
+  backend — §8 `BackendCandidate`s are content-free and re-read by integer id from
+  BC's `claims` table, so a foreign Decima string id has no row and would be dropped
+  ([LEDGER_SPEC §8bis](LEDGER_SPEC.md)); Decima re-resolves its own items and BC
+  merges them after native recall. The source is **injectable**
+  (`DecimaKnowledgeSource`, stub for tests + an optional `DECIMA_SRC`/`DECIMA_WEFT`
+  real adapter) and **optional + non-fatal**: absent/erroring Decima contributes
+  nothing and BC retrieval is unaffected — `decima` is **never** a required
+  dependency. A **conformance pin** asserts BC's expected `READ_CONTRACT_VERSION` +
+  knowledge field set match Decima's when importable (skips otherwise). Zero model
+  calls. Code in `cli/brainconnect/federation.py` + `recall._federate`, contract in
+  [FEDERATION.md](FEDERATION.md).
+- **Lane 2:** delegated to the Decima repo (the versioned read-contract lives
+  there and is published — `decima.read_contract`, `READ_CONTRACT_VERSION` 0.1);
+  BC consumes it in Lane 5. **All BC-side lanes (1, 3, 4, 5, 6, 7, 8) are shipped.**

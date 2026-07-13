@@ -272,6 +272,47 @@ FTS primitives for similarity. Those uses are **not** routed through the backend
 seam: gating must stay deterministic and local even when recall is served by a
 remote vector store.
 
+## 8bis. Foreign-store federation (Decima knowledge — ADR 0008 Lane 5)
+
+§8 governs search over the **BC-owned ledger**: a backend returns content-free
+`BackendCandidate(kind, id: int, score, rank)` rows and recall RE-READS every
+authoritative field from BC's own `claims` table by integer id. That content-free
+invariant is exactly why the §8 seam cannot carry a **foreign** store BC does not
+hold: a foreign id (e.g. a Decima Cell id — a `str`) has no matching `claims` row,
+so every candidate would be dropped at re-read. Trying to federate through §8 would
+silently return nothing.
+
+Federation is therefore a **sibling read-time seam**, not a §8 backend. The foreign
+store is the authority for its own content and re-reads it every call (Decima's
+`KnowledgeProjection.items()` recomputes `trust`/`instruction_eligible` from live
+Cells) — exactly analogous to BC's ledger re-read. It hands back FULLY-RESOLVED
+items which recall merges **after** its native pass (`recall._federate`,
+`cli/brainconnect/federation.py`). Binding rules:
+
+- **Federate, do not fork.** Nothing is copied into the BC ledger; a federated item
+  exists only in the pack and vanishes when the foreign store retracts it. No second
+  knowledge store is created.
+- **Honor the foreign trust bit exactly as BC's `trusted`.** A Decima item is
+  surfaced `trusted` **only** when its `instruction_eligible` is truly `True`
+  (fail-closed on any disagreement). Untrusted federated text is DATA, never
+  instructions — and, like BC's own untrusted material, is opt-in (`trusted_only=false`).
+- **Same read door.** Foreign text passes the identical safety pass (§6.1 /
+  `docs/SAFETY.md`): masking, withholding, and quarantine-on-scanner-failure run
+  over it because foreign provenance is untrusted input.
+- **Optional + non-fatal.** Federation is off unless configured
+  (`DECIMA_SRC`/`DECIMA_WEFT`); a missing or erroring source contributes nothing and
+  never breaks native recall. The foreign repo is never a required dependency.
+- **Conformance-pinned.** BC codes against the foreign repo's *versioned
+  read-contract* (Decima `READ_CONTRACT_VERSION`), and an acceptance pin asserts the
+  expected version + knowledge field set when the repo is importable (skips cleanly
+  otherwise) so a contract change cannot drift silently.
+
+The `DecimaKnowledgeBackend` still satisfies the §8 `RetrievalBackend` Protocol
+shape (it *is* a backend object) but its `search` is content-free per §8 and
+nominates no ledger ids; its content-bearing work is the sibling
+`federate()` method. It is deliberately **not** registered in the §8 `_BUILDERS`
+registry (that registry resolves the single BC-ledger search backend).
+
 ## 9. Graphiti integration path
 
 ```
