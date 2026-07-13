@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 
 from .db import Repo
 from . import api, ingest, registry, candidates
+from . import observability as obsmod
 from .delegate_clients import (
     AGENTCONNECT, COMPUTECONNECT, DelegationClientError,
     RoutingClient, EstimateClient,
@@ -382,7 +383,8 @@ PROVENANCE_TAGS = ("orchestration-decision", "delegation-provenance")
 def delegate(repo: Repo, workload, *, routing_client: RoutingClient | None = None,
              estimate_client: EstimateClient | None = None,
              record: bool = True, proposed_by: str = "delegation-trigger",
-             proposed_by_type: str = "tool") -> DelegationResult:
+             proposed_by_type: str = "tool",
+             emitter: "obsmod.Emitter | None" = None) -> DelegationResult:
     """Assemble → delegate → (fallback if needed) → record provenance.
 
     `routing_client` / `estimate_client` are injected (HTTP clients in production,
@@ -484,6 +486,29 @@ def delegate(repo: Repo, workload, *, routing_client: RoutingClient | None = Non
         result.provenance_ref = _record_provenance(
             repo, workload, result, proposed_by=proposed_by,
             proposed_by_type=proposed_by_type)
+
+    # Lane 8: emit the delegation/routing DECISION into AgentConnect's
+    # observability seam (AC EventType `subtask.routed`). NON-FATAL + carries
+    # ONLY ids + a decision class + small scalars — never the request/decision
+    # body, an engine URL, or any private payload.
+    obsmod.emit_decision(
+        emitter, obsmod.EVT_SUBTASK_ROUTED,
+        trace_id=workload.task_id, task_id=workload.task_id,
+        outcome=(obsmod.OUTCOME_SUCCEEDED if result.delegated
+                 else obsmod.OUTCOME_UNKNOWN),
+        decision_class=result.outcome_class,  # "delegated" | "deferred"
+        agent_role="orchestrator",
+        metadata={
+            "delegated": result.delegated,
+            "fallback": result.fallback,
+            "capability_class": workload.capability_class,
+            "privacy_effective": priv.get("effective"),
+            "has_routing": result.routing_decision is not None,
+            "has_placement": result.placement_estimate is not None,
+            "rejected_offbox": (result.rejected_decision is not None
+                                or result.rejected_estimate is not None),
+            "error_count": len(result.errors),
+        })
     return result
 
 

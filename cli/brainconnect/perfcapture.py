@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 
 from .db import Repo
 from . import candidates, ingest, refs, safety, util
+from . import observability as obsmod
 from .registry import MODEL_PERFORMANCE_TAG
 from .scopes import Scope
 from .delegate_clients import (
@@ -388,7 +389,9 @@ def capture(repo: Repo, *, telemetry_client: TelemetryClient | None = None,
             estimate_privacy_header: str | None = None,
             observed_at: str | None = None,
             proposed_by: str = "perfcapture",
-            proposed_by_type: str = "tool") -> CaptureRunResult:
+            proposed_by_type: str = "tool",
+            trace_id: str | None = None,
+            emitter: "obsmod.Emitter | None" = None) -> CaptureRunResult:
     """Read CC telemetry and file each observed model fact as a PENDING candidate.
 
     `telemetry_client` is injected (an `HttpTelemetryClient` in production, a fake in
@@ -402,9 +405,31 @@ def capture(repo: Repo, *, telemetry_client: TelemetryClient | None = None,
     if observed_at is None:
         observed_at = util.now_iso()
     result = CaptureRunResult(cc_available=False)
+
+    def _finish(res: CaptureRunResult) -> CaptureRunResult:
+        # Lane 8: emit the capture DECISION into AgentConnect's observability seam
+        # (AC EventType `memory.captured`). NON-FATAL + carries ONLY counts +
+        # availability — never a model id, a telemetry value, or a raw body.
+        obsmod.emit_decision(
+            emitter, obsmod.EVT_MEMORY_CAPTURED,
+            trace_id=trace_id or "bc-perfcapture", task_id=None,
+            outcome=(obsmod.OUTCOME_SUCCEEDED if res.captured
+                     else obsmod.OUTCOME_UNKNOWN),
+            decision_class="perfcapture-telemetry",
+            agent_role="registrar",
+            metadata={
+                "cc_available": res.cc_available,
+                "observed": res.observed,
+                "captured_count": len(res.captured),
+                "duplicates": res.duplicates,
+                "skipped_count": len(res.skipped),
+                "error_count": len(res.errors),
+            })
+        return res
+
     if telemetry_client is None:
         result.errors.append(f"{COMPUTECONNECT}: no telemetry client (unavailable)")
-        return result
+        return _finish(result)
 
     # /health is the liveness gate: if it cannot be read, CC is unavailable —
     # capture nothing and report cleanly (never crash). It is otherwise only
@@ -414,7 +439,7 @@ def capture(repo: Repo, *, telemetry_client: TelemetryClient | None = None,
         result.cc_available = True
     except DelegationClientError as e:
         result.errors.append(str(e))
-        return result
+        return _finish(result)
 
     # /models (full inventory) + /models/loaded (resident subset). Each is
     # best-effort: a failure of one is noted, not fatal. /models/loaded is the
@@ -445,7 +470,7 @@ def capture(repo: Repo, *, telemetry_client: TelemetryClient | None = None,
     for o in obs:
         _capture_one(repo, o, observed_at=observed_at, proposed_by=proposed_by,
                      proposed_by_type=proposed_by_type, result=result)
-    return result
+    return _finish(result)
 
 
 # --- the deterministic read surface ------------------------------------------

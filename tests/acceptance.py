@@ -4218,6 +4218,9 @@ def main():
     # ---------------- Agent-role assignment (ADR 0008 Lane 6) ----------------
     _roles_checks()
 
+    # ---------------- Observability emitter (ADR 0008 Lane 8) ----------------
+    _observability_checks()
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
@@ -5987,6 +5990,372 @@ def _promote_registry(root, ref, reviewer_type):
     with Repo.open(start=root) as r:
         apimod.promote(r, ref, reviewer="self", confidence="high",
                        scope="model:Qwen3.6-35B-A3B", reviewer_type=reviewer_type)
+
+
+def _observability_checks():
+    """The observability emitter (ADR 0008 Lane 8).
+
+    BC EMITS its orchestration DECISIONS into AgentConnect's observability seam
+    using AC's EXISTING EventType vocabulary — it does NOT define a competing
+    event stream. Verified here: (1) a CONFORMANCE PIN — BC's mirrored EventType
+    constants byte-match AC's real EventType when AC is importable, and a
+    BC-emitted event round-trips into AC's AgentObservationEvent (skips cleanly
+    when AC is absent); (2) the default sink is Noop (disabled) and emits nothing;
+    (3) a StructuredLog sink records a well-formed event for a registry-promotion,
+    a delegation, a role-assignment, and a perfcapture decision, each carrying the
+    mapped AC EventType + correlation ids; (4) a FAILING sink does NOT break the
+    underlying orchestration operation (non-fatal); (5) NO secret / raw private
+    field appears in an emitted event (a secret-bearing input yields an event with
+    only ids + a decision class + counts); (6) the observability-OFF path works.
+    """
+    print("[observability] Lane 8: emit BC decisions into AC's provider seam using "
+          "AC's EventType vocabulary; non-fatal, optional, no secrets")
+    from brainconnect import observability as obs
+    from brainconnect import registry as regmod, delegate as dmod, roles as rolesmod
+    from brainconnect import perfcapture as pcmod, api as apimod
+    from brainconnect import candidates as candmod, delegate_clients as dclients
+    from brainconnect.db import Repo
+
+    # A capturing sink for assertions, and a failing sink for the non-fatal proof.
+    class MemSink(obs.ObservabilitySink):
+        name = "mem"
+        def __init__(self):
+            self.events = []
+        def append_event(self, event):
+            self.events.append(event)
+
+    class BoomSink(obs.ObservabilitySink):
+        name = "boom"
+        def append_event(self, event):
+            raise RuntimeError("sink is down")
+
+    # =====================================================================
+    # (1) CONFORMANCE PIN — BC mirrors AC's vocabulary, never forks it.
+    # =====================================================================
+    _conf_checked = False
+    _ac_src = os.environ.get(
+        "AGENTCONNECT_CORE_SRC",
+        "/home/mini/mcp-agentconnect/packages/agentconnect-core/src")
+    if Path(_ac_src).is_dir() and _ac_src not in sys.path:
+        sys.path.insert(0, _ac_src)
+    try:
+        from agentconnect.core.observability.model import (
+            EventType as _ACET, DEFAULT_STATE_FOR_EVENT as _ACDS,
+            ObservationOutcome as _ACOO, AgentObservationEvent as _ACEvent)
+        check("observability CONFORMANCE PIN: BC's mirrored EventType constants "
+              "byte-match AgentConnect's real EventType wire values (no competing "
+              "vocabulary / no silent drift)",
+              obs.EVT_SUBTASK_ROUTED == _ACET.subtask_routed.value
+              and obs.EVT_DECISION_RECORDED == _ACET.decision_recorded.value
+              and obs.EVT_MEMORY_CAPTURED == _ACET.memory_captured.value
+              and obs.EVT_COMPUTE_PLACED == _ACET.compute_placed.value)
+        check("observability CONFORMANCE PIN: every EventType BC emits is a REAL "
+              "AC EventType, and BC's per-event state mirrors AC's "
+              "DEFAULT_STATE_FOR_EVENT",
+              all(et in {e.value for e in _ACET}
+                  for et in obs.EMITTED_EVENT_TYPES.values())
+              and all(_ACDS[_ACET(et)].value == st
+                      for et, st in obs._DEFAULT_STATE.items()))
+        check("observability CONFORMANCE PIN: every outcome BC uses is a REAL AC "
+              "ObservationOutcome value",
+              all(oc in {o.value for o in _ACOO}
+                  for oc in (obs.OUTCOME_SUCCEEDED, obs.OUTCOME_FAILED,
+                             obs.OUTCOME_DENIED, obs.OUTCOME_UNKNOWN)))
+        # A BC-emitted event dict must construct AC's real model with no drift.
+        _rt = obs.Emitter(MemSink()).emit(
+            obs.EVT_SUBTASK_ROUTED, trace_id="rt", task_id="rt",
+            outcome=obs.OUTCOME_SUCCEEDED, decision_class="delegated",
+            metadata={"delegated": True})
+        _ace = _ACEvent(**_rt)
+        check("observability CONFORMANCE PIN: a BC-emitted event dict round-trips "
+              "into AC's AgentObservationEvent unchanged (same shape, same type)",
+              _ace.event_type == _ACET.subtask_routed
+              and _ace.model_dump(mode="json")["event_type"] == "subtask.routed"
+              and _ace.trace_id == "rt")
+        _conf_checked = True
+    except ImportError:
+        pass
+    if not _conf_checked:
+        check("observability CONFORMANCE PIN SKIPPED: agentconnect-core not "
+              "importable in this venv (mirror-only; no forked vocabulary)", True)
+
+    # =====================================================================
+    # (2) Default sink is Noop (disabled) and emits nothing.
+    # =====================================================================
+    check("observability: a bare Emitter uses the Noop sink and is disabled",
+          obs.Emitter().enabled is False
+          and obs.NoopSink().append_event({"x": 1}) is None)
+    _prev_env = os.environ.pop("BRAINCONNECT_OBSERVABILITY", None)
+    try:
+        obs.reset_default_emitter()
+        check("observability: env unset => sink_from_env is Noop (default disabled)",
+              obs.sink_from_env().name == "noop"
+              and obs.default_emitter().enabled is False)
+    finally:
+        if _prev_env is not None:
+            os.environ["BRAINCONNECT_OBSERVABILITY"] = _prev_env
+        obs.reset_default_emitter()
+
+    # =====================================================================
+    # (3) A StructuredLog sink records a well-formed event for EACH of the four
+    #     decision points, carrying the mapped AC EventType + correlation ids.
+    # =====================================================================
+    logdir = Path(tempfile.mkdtemp(prefix="wikibrain-obs-"))
+    logpath = logdir / "events.jsonl"
+    sink = obs.StructuredLogSink(str(logpath))
+    em = obs.Emitter(sink)
+
+    oroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-obs-repo-")))
+
+    # -- Lane 1: registry seed (capability-claim filing) -> memory.captured ------
+    with Repo.open(start=oroot) as r:
+        created = regmod.seed(r, trace_id="obs-reg", emitter=em)
+    reg_ev = [e for e in sink.read_events(trace_id="obs-reg")]
+    check("observability: registry seed emits ONE memory.captured event with the "
+          "filed count (Lane 1 -> AC memory.captured)",
+          len(reg_ev) == 1
+          and reg_ev[0]["event_type"] == obs.EVT_MEMORY_CAPTURED
+          and reg_ev[0]["outcome"] == obs.OUTCOME_SUCCEEDED
+          and reg_ev[0]["metadata"]["decision_class"] == "registry-capability-seed"
+          and reg_ev[0]["metadata"]["filed_count"] == len(created))
+    # An idempotent re-seed emits with the unknown outcome + idempotent_noop flag.
+    with Repo.open(start=oroot) as r:
+        regmod.seed(r, trace_id="obs-reg2", emitter=em)
+    reg_ev2 = sink.read_events(trace_id="obs-reg2")
+    check("observability: an idempotent re-seed still emits, marked "
+          "idempotent_noop=True with outcome=unknown (nothing newly filed)",
+          len(reg_ev2) == 1
+          and reg_ev2[0]["metadata"]["idempotent_noop"] is True
+          and reg_ev2[0]["outcome"] == obs.OUTCOME_UNKNOWN)
+
+    # Promote the preferred model so the delegation can assemble a trusted claim.
+    with Repo.open(start=oroot) as r:
+        snap = regmod.snapshot(r)
+        hcl = next(t for t in snap["tiers"] if t["tier"] == "high-capability-local")
+        apimod.promote(r, hcl["preferred_model"]["ref"], reviewer="matthew",
+                       confidence="high", scope="model:Qwen3.6-35B-A3B",
+                       reviewer_type="human")
+
+    class FakeAC:
+        def route(self, ctx):
+            return {"task_id": ctx["task_id"],
+                    "decision": "route_to_local_resident_model",
+                    "selected_provider": "local-node-1",
+                    "selected_model": "qwen3-30b-a3b", "rejected_options": [],
+                    "policy_version": "v1", "scores": []}
+
+    class FakeCC:
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": True, "selected_model": "qwen3-30b-a3b",
+                    "runtime": "llama.cpp", "loaded": True,
+                    "estimated_queue_seconds": 0.0,
+                    "estimated_tokens_per_second": 40.0, "estimated_quality": 0.8,
+                    "reason": {"provider_id": "wiki-llama",
+                               "placement_class": "local_resident"}}
+
+    # -- Lane 4: delegation -> subtask.routed ------------------------------------
+    with Repo.open(start=oroot) as r:
+        dres = dmod.delegate(r, {"task_id": "obs-task-deleg",
+            "capability_class": "high-capability-local",
+            "privacy_tier": "repo_sensitive"},
+            routing_client=FakeAC(), estimate_client=FakeCC(), emitter=em)
+    dev = sink.read_events(trace_id="obs-task-deleg")
+    check("observability: a delegation emits ONE subtask.routed event correlated "
+          "by task_id, outcome=succeeded when delegated (Lane 4 -> AC "
+          "subtask.routed)",
+          len(dev) == 1
+          and dev[0]["event_type"] == obs.EVT_SUBTASK_ROUTED
+          and dev[0]["task_id"] == "obs-task-deleg"
+          and dev[0]["trace_id"] == "obs-task-deleg"
+          and dev[0]["outcome"] == obs.OUTCOME_SUCCEEDED
+          and dev[0]["metadata"]["decision_class"] == "delegated"
+          and dev[0]["metadata"]["delegated"] is True
+          and dres.delegated is True)
+
+    # -- Lane 6: role assignment -> decision.recorded ----------------------------
+    with Repo.open(start=oroot) as r:
+        rres = rolesmod.assign_roles(r, "obs-task-roles",
+            ["implementer", "test_reviewer"], emitter=em)
+    rev = sink.read_events(trace_id="obs-task-roles")
+    check("observability: a role assignment emits ONE decision.recorded event "
+          "with the assigned/refused/collision counts (Lane 6 -> AC "
+          "decision.recorded)",
+          len(rev) == 1
+          and rev[0]["event_type"] == obs.EVT_DECISION_RECORDED
+          and rev[0]["task_id"] == "obs-task-roles"
+          and rev[0]["outcome"] == obs.OUTCOME_SUCCEEDED
+          and rev[0]["metadata"]["decision_class"] == "role-assignment"
+          and rev[0]["metadata"]["assigned_count"] == len(rres.assignments))
+    # A fail-closed unknown role => outcome=denied.
+    with Repo.open(start=oroot) as r:
+        rolesmod.assign_roles(r, "obs-task-roles-bad", ["implementer", "wizard"],
+                              emitter=em)
+    rev_bad = sink.read_events(trace_id="obs-task-roles-bad")
+    check("observability: a role assignment with an unknown (refused) role emits "
+          "outcome=denied with refused_count>0",
+          len(rev_bad) == 1
+          and rev_bad[0]["outcome"] == obs.OUTCOME_DENIED
+          and rev_bad[0]["metadata"]["refused_count"] >= 1)
+
+    class FakeTelemetry:
+        def health(self):
+            return {"ok": True}
+        def models(self, *, loaded_only=False):
+            if loaded_only:
+                return {"loaded": [{"id": "qwen3-30b-a3b", "loaded": True}]}
+            return {"models": [{"id": "qwen3-30b-a3b"}]}
+
+    # -- Lane 7: perfcapture -> memory.captured ----------------------------------
+    with Repo.open(start=oroot) as r:
+        pres = pcmod.capture(r, telemetry_client=FakeTelemetry(),
+                             trace_id="obs-perf", emitter=em)
+    pev = sink.read_events(trace_id="obs-perf")
+    check("observability: a perfcapture pass emits ONE memory.captured event with "
+          "the observed/captured counts (Lane 7 -> AC memory.captured)",
+          len(pev) == 1
+          and pev[0]["event_type"] == obs.EVT_MEMORY_CAPTURED
+          and pev[0]["metadata"]["decision_class"] == "perfcapture-telemetry"
+          and pev[0]["metadata"]["cc_available"] is True
+          and pev[0]["metadata"]["observed"] == pres.observed)
+
+    # Every emitted event is well-formed: AC's full field set, monotonic sequence.
+    all_ev = sink.read_events()
+    check("observability: every emitted event carries AC's full field set (event_id, "
+          "sequence, timestamp, event_type, trace_id, metadata, ...)",
+          all(set(obs._EVENT_FIELDS) <= set(e.keys()) for e in all_ev)
+          and all(isinstance(e["event_id"], str) and e["event_id"]
+                  for e in all_ev))
+    check("observability: sequence is monotonic per emitter (readers can restore "
+          "order) and event_id is a stable idempotency key",
+          [e["sequence"] for e in all_ev] == sorted(e["sequence"] for e in all_ev)
+          and len({e["event_id"] for e in all_ev}) == len(all_ev))
+
+    # =====================================================================
+    # (4) A FAILING sink does NOT break the underlying orchestration operation.
+    # =====================================================================
+    boom = obs.Emitter(BoomSink())
+    broot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-obs-boom-")))
+    with Repo.open(start=broot) as r:
+        b_created = regmod.seed(r, emitter=boom)          # sink raises inside
+        b_roles = rolesmod.assign_roles(r, "boom-task", ["implementer"],
+                                        emitter=boom)
+        b_perf = pcmod.capture(r, telemetry_client=FakeTelemetry(), emitter=boom)
+        b_prov = candmod.get(r, refsmod.parse(b_roles.provenance_ref,
+                                              refsmod.CANDIDATE))
+    check("observability NON-FATAL: a sink that RAISES on every append never breaks "
+          "the operation — registry seed, role assignment, and perfcapture all "
+          "still succeed and record provenance",
+          len(b_created) > 0
+          and b_roles.ok is True and b_roles.provenance_ref is not None
+          and b_prov["status"] == "pending"
+          and b_perf.cc_available is True)
+    check("observability NON-FATAL: emit_decision swallows the sink error and "
+          "returns None (never propagates)",
+          obs.emit_decision(boom, obs.EVT_DECISION_RECORDED, trace_id="x") is None)
+
+    # =====================================================================
+    # (5) NO secret / raw private field is ever present in an emitted event.
+    #     A decision whose INPUTS carry a secret must yield an event of ids +
+    #     class + counts only.
+    # =====================================================================
+    SECRET = "sk-SUPER-SECRET-TOKEN-9f3a"
+    secret_sink = MemSink()
+    secret_em = obs.Emitter(secret_sink)
+
+    class SecretBearingAC:
+        """A hostile engine whose response is stuffed with a credential; BC must
+        never copy any of it into an observation event."""
+        def route(self, ctx):
+            return {"task_id": ctx["task_id"],
+                    "decision": "route_to_local_resident_model",
+                    "selected_provider": "local-node-1",
+                    "selected_model": "qwen3-30b-a3b", "rejected_options": [],
+                    "policy_version": "v1", "scores": [],
+                    "api_key": SECRET, "prompt": "leak " + SECRET}
+
+    class SecretBearingCC:
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": True, "selected_model": "qwen3-30b-a3b",
+                    "runtime": "llama.cpp", "loaded": True,
+                    "estimated_queue_seconds": 0.0,
+                    "estimated_tokens_per_second": 40.0, "estimated_quality": 0.8,
+                    "reason": {"provider_id": "wiki-llama",
+                               "placement_class": "local_resident",
+                               "auth_header": "Bearer " + SECRET}}
+
+    sroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-obs-secret-")))
+    with Repo.open(start=sroot) as r:
+        regmod.seed(r)
+        snap = regmod.snapshot(r)
+        hcl = next(t for t in snap["tiers"] if t["tier"] == "high-capability-local")
+        apimod.promote(r, hcl["preferred_model"]["ref"], reviewer="matthew",
+                       confidence="high", scope="model:Qwen3.6-35B-A3B",
+                       reviewer_type="human")
+        dmod.delegate(r, {"task_id": "secret-task",
+            "capability_class": "high-capability-local",
+            "privacy_tier": "repo_sensitive"},
+            routing_client=SecretBearingAC(), estimate_client=SecretBearingCC(),
+            emitter=secret_em)
+    secret_blob = json.dumps(secret_sink.events)
+    check("observability NO-SECRET: an emitted event derived from a secret-bearing "
+          "engine response carries NONE of the secret (no api_key, no prompt, no "
+          "auth header) — only ids + a decision class + small scalars",
+          SECRET not in secret_blob
+          and "api_key" not in secret_blob
+          and "auth_header" not in secret_blob
+          and "prompt" not in secret_blob
+          and len(secret_sink.events) == 1
+          and secret_sink.events[0]["metadata"]["decision_class"] == "delegated")
+    # Defense in depth: even if a caller hands a nested body/URL to emit, the scrub
+    # drops it (a raw dict can never become a field; a URL string is not persisted
+    # by any call site).
+    scrub_ev = obs.Emitter(MemSink())
+    _se = scrub_ev.emit(obs.EVT_DECISION_RECORDED, trace_id="scrub",
+                        metadata={"raw_body": {"password": SECRET},
+                                  "nested": [SECRET], "count": 3})
+    check("observability NO-SECRET (defense in depth): _scrub_metadata drops nested "
+          "dict/list values (a raw body can never become an emitted field), keeps "
+          "only small scalars",
+          "raw_body" not in _se["metadata"]
+          and "nested" not in _se["metadata"]
+          and _se["metadata"]["count"] == 3
+          and SECRET not in json.dumps(_se))
+
+    # =====================================================================
+    # (6) The observability-OFF path works: the decision points run with the
+    #     default (disabled) emitter and produce identical results, writing no log.
+    # =====================================================================
+    _prev_env = os.environ.pop("BRAINCONNECT_OBSERVABILITY", None)
+    try:
+        obs.reset_default_emitter()
+        offroot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-obs-off-")))
+        with Repo.open(start=offroot) as r:
+            off_created = regmod.seed(r)                  # emitter defaults to Noop
+            off_roles = rolesmod.assign_roles(r, "off-task", ["implementer"])
+            off_perf = pcmod.capture(r, telemetry_client=FakeTelemetry())
+        check("observability OFF: with observability disabled (default), every "
+              "decision point runs normally and records provenance — BC fully "
+              "functions with observability off (never a required dependency)",
+              len(off_created) > 0 and off_roles.ok is True
+              and off_roles.provenance_ref is not None
+              and off_perf.cc_available is True
+              and obs.default_emitter().enabled is False)
+    finally:
+        if _prev_env is not None:
+            os.environ["BRAINCONNECT_OBSERVABILITY"] = _prev_env
+        obs.reset_default_emitter()
+
+    # The env selector maps the documented values to the right sink.
+    check("observability: BRAINCONNECT_OBSERVABILITY selects the sink — 'off'/unset "
+          "=> noop, 'structured_log'/'jsonl'/'log' => structured_log, unknown => "
+          "noop (never crashes)",
+          obs.sink_from_env({}).name == "noop"
+          and obs.sink_from_env({"BRAINCONNECT_OBSERVABILITY": "off"}).name == "noop"
+          and obs.sink_from_env({"BRAINCONNECT_OBSERVABILITY": "jsonl",
+                "BRAINCONNECT_OBSERVABILITY_LOG_PATH": str(logdir / "e2.jsonl")}
+                ).name == "structured_log"
+          and obs.sink_from_env({"BRAINCONNECT_OBSERVABILITY": "bogus"}).name
+              == "noop")
 
 
 def _hardening_checks():

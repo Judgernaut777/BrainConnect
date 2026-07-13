@@ -121,6 +121,22 @@ everywhere.
   Lane-4 delegation trigger on the shared Lane-1 tier vocabulary. Code in
   `cli/brainconnect/roles.py`, CLI `brainconnect roles`, contract in
   [ROLES.md](ROLES.md).
-- **Lanes 2, 5, 8:** planned. Lanes 4, 6, and 7 are shipped; Lane 5 (the unified
+- **Lane 8 (observability):** ✅ complete — BC EMITS its orchestration decisions
+  INTO AgentConnect's existing `AgentObservabilityProvider` seam using AC's
+  existing `EventType` vocabulary; it defines **no** competing event stream,
+  timeline, run-history, or token ledger (ADR 0008 prohibition). BC mirrors only
+  the subset of AC wire values it emits (`subtask.routed`, `decision.recorded`,
+  `memory.captured`) as plain constants pinned to AC's real `EventType` by a
+  **conformance test** (skips when AC absent — like the Lane-4 privacy pin), so
+  `agentconnect` is **never a required dependency**. Emit sites: registry
+  capability-seed (Lane 1 → `memory.captured`), delegation (Lane 4 →
+  `subtask.routed`), role assignment (Lane 6 → `decision.recorded`), perfcapture
+  (Lane 7 → `memory.captured`) — each carries correlation ids + a decision class +
+  small scalars, **never** a prompt/completion/raw body/URL. Default sink is Noop
+  (disabled); a StructuredLog JSONL sink or AC's own provider is env-selectable.
+  Emission is **non-fatal** (a sink error is swallowed, never breaks the
+  operation) and **optional** (BC fully functions with it off). Code in
+  `cli/brainconnect/observability.py`, contract in [OBSERVABILITY.md](OBSERVABILITY.md).
+- **Lanes 2, 5:** planned. Lanes 4, 6, 7, and 8 are shipped; Lane 5 (the unified
   knowledge abstraction federating Decima knowledge) is next, pending the Lane 2
   Decima read-contract.

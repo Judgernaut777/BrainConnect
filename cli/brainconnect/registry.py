@@ -41,6 +41,7 @@ from dataclasses import dataclass
 
 from .db import Repo
 from . import candidates, refs, trust
+from . import observability as obsmod
 from .scopes import Scope, GLOBAL
 
 # The classification tag that binds a *model* capability fact (preferred/deployed,
@@ -456,7 +457,8 @@ def _squatter_id(repo: Repo, key: str) -> int | None:
 
 
 def seed(repo: Repo, *, proposed_by: str = "registry-seed",
-         proposed_by_type: str = "tool") -> list[str]:
+         proposed_by_type: str = "tool", trace_id: str | None = None,
+         emitter: "obsmod.Emitter | None" = None) -> list[str]:
     """File the tier hierarchy + model declarations as PENDING memory candidates.
 
     Returns the refs of the candidates created (empty when everything is already
@@ -490,4 +492,16 @@ def seed(repo: Repo, *, proposed_by: str = "registry-seed",
             proposed_scopes=[spec.scope], tags=list(spec.tags),
             registry_canonical=spec.key)
         created.append(refs.candidate(cid))
+
+    # Lane 8: emit the registry capability-claim DECISION into AgentConnect's
+    # observability seam (AC EventType `memory.captured`). NON-FATAL + carries
+    # ONLY a count + idempotency flag — never a claim body or a model id.
+    obsmod.emit_decision(
+        emitter, obsmod.EVT_MEMORY_CAPTURED,
+        trace_id=trace_id or "bc-registry-seed", task_id=None,
+        outcome=(obsmod.OUTCOME_SUCCEEDED if created
+                 else obsmod.OUTCOME_UNKNOWN),
+        decision_class="registry-capability-seed",
+        agent_role="registrar",
+        metadata={"filed_count": len(created), "idempotent_noop": not created})
     return created

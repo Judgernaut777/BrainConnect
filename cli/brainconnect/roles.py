@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 from .db import Repo
 from . import api, ingest, registry, candidates
+from . import observability as obsmod
 
 # ---------------------------------------------------------------------------
 # The AgentConnect model-manager profiles this maps onto (from AC recon:
@@ -271,7 +272,8 @@ def _independence_findings(assignments: list[dict]) -> list[dict]:
 def assign_roles(repo: Repo, task_id: str, roles, *,
                  profile_overrides: dict[str, str] | None = None,
                  record: bool = True, proposed_by: str = "role-assigner",
-                 proposed_by_type: str = "tool") -> RoleAssignmentResult:
+                 proposed_by_type: str = "tool",
+                 emitter: "obsmod.Emitter | None" = None) -> RoleAssignmentResult:
     """Map requested agent roles → AC profiles, flag reviewer-independence, record.
 
     * Known roles resolve through the DATA table (plus any validated override).
@@ -357,6 +359,23 @@ def assign_roles(repo: Repo, task_id: str, roles, *,
     if record:
         result.provenance_ref = _record_provenance(
             repo, result, proposed_by=proposed_by, proposed_by_type=proposed_by_type)
+
+    # Lane 8: emit the role-assignment DECISION into AgentConnect's observability
+    # seam (AC EventType `decision.recorded`). NON-FATAL + carries ONLY the
+    # task id + a decision class + counts — never a role payload or private text.
+    obsmod.emit_decision(
+        emitter, obsmod.EVT_DECISION_RECORDED,
+        trace_id=result.task_id, task_id=result.task_id,
+        outcome=(obsmod.OUTCOME_SUCCEEDED if result.ok
+                 else obsmod.OUTCOME_DENIED),
+        decision_class="role-assignment",
+        agent_role="orchestrator",
+        metadata={
+            "assigned_count": len(result.assignments),
+            "refused_count": len(result.refused_roles),
+            "collision_count": len(result.collisions),
+            "ok": result.ok,
+        })
     return result
 
 
