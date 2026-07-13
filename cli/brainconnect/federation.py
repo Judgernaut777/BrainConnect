@@ -69,9 +69,11 @@ _log = logging.getLogger("brainconnect.federation")
 DECIMA = "decima"
 
 #: The synthetic scope TYPE a federated item carries (``external:decima``). It is a
-#: FOREIGN scope — deliberately NOT one of BC's ledger ``scopes.SCOPE_TYPES`` — so a
-#: caller must ask for it explicitly to admit foreign knowledge into a scoped recall
-#: (see ``recall._external_scope_requested``). Fail-closed to the caller's scope.
+#: FOREIGN scope: registered in ``scopes.SCOPE_TYPES`` only so a caller can construct
+#: and request it, but it names knowledge BC does not own (never a BC ledger claim). A
+#: scoped recall must ask for it explicitly to admit foreign knowledge (see
+#: ``recall._external_scope_requested``); otherwise federation is fail-closed to the
+#: caller's scope.
 EXTERNAL_SCOPE_TYPE = "external"
 
 #: The Decima read-contract version BC is written against. The conformance pin
