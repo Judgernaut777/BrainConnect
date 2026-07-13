@@ -24,6 +24,7 @@ from . import server as servermod
 from . import backup as backupmod
 from . import delegate as delegatemod
 from . import delegate_clients as delegateclients
+from . import perfcapture as perfcapturemod
 
 # Ledger errors that are a user mistake at the terminal, not a bug: print the
 # message and exit non-zero rather than dumping a traceback.
@@ -1278,6 +1279,77 @@ def cmd_delegate(args):
               "not auto-promoted)")
 
 
+def cmd_perfcapture(args):
+    """The Lane-7 performance-capture adapter (ADR 0008): read ComputeConnect
+    telemetry and file each observed model availability/performance fact as a
+    PENDING model_performance candidate (human-promoted, never auto-promoted). No
+    model calls. Bare `perfcapture` (or `perfcapture list`) is the read surface."""
+    pcmd = getattr(args, "pcmd", None)
+    if pcmd == "capture":
+        # An absent --cc-url means "CC unavailable": capture nothing, report cleanly
+        # (no crash), exactly like the delegation trigger's absent-URL fallback.
+        telemetry_client = (
+            delegateclients.HttpTelemetryClient(args.cc_url, token=args.cc_token or None)
+            if args.cc_url else None)
+        estimate_client = None
+        estimate_body = None
+        if args.estimate and args.cc_url:
+            estimate_client = delegateclients.HttpEstimateClient(
+                args.cc_url, token=args.cc_token or None)
+            # A side-effect-free /route/estimate for the named tier's structural
+            # capabilities. NO generation — /route/estimate creates no run.
+            try:
+                tier = registrymod.get_tier(args.capability_class)
+                caps = list(tier.required_capabilities)
+            except registrymod.RegistryError:
+                caps = []
+            estimate_body = {
+                "required_capabilities": caps,
+                "context_tokens": args.input_tokens,
+                "max_output_tokens": args.output_tokens,
+                "privacy_tier": args.privacy_tier,
+            }
+        with Repo.open() as repo:
+            result = perfcapturemod.capture(
+                repo, telemetry_client=telemetry_client,
+                estimate_client=estimate_client, estimate_body=estimate_body,
+                estimate_privacy_header=args.privacy_tier if args.estimate else None,
+                proposed_by=args.by, proposed_by_type=args.by_type)
+        out = result.as_dict()
+        if _emit(out, args.json):
+            return
+        if not result.cc_available:
+            print("perfcapture: ComputeConnect unavailable — nothing captured "
+                  f"({'; '.join(result.errors) or 'no client configured'})")
+            return
+        print(f"perfcapture: observed {result.observed} telemetry fact(s); "
+              f"filed {len(result.captured)} PENDING candidate(s), "
+              f"{result.duplicates} duplicate(s) deduped, "
+              f"{len(result.skipped)} skipped")
+        for ref in result.captured:
+            print(f"  {ref}")
+        for sk in result.skipped:
+            print(f"  skipped {sk['metric']}/{sk['kind']}: {sk['reason']}")
+        if result.captured:
+            print("promote them (human-gated) with "
+                  "`brainconnect promote <ref> --scope model:<id> --confidence <label>`; "
+                  "an agent/model can never self-promote a captured capability fact.")
+        return
+    # default (pcmd is None or "list"): the deterministic read surface.
+    with Repo.open() as repo:
+        rows = perfcapturemod.listing(repo, status=args.status or None)
+    if _emit(rows, args.json):
+        return
+    if not rows:
+        print("perfcapture: no captured telemetry candidates")
+        return
+    print(f"captured telemetry candidates ({len(rows)}):")
+    for row in rows:
+        print(f"  {row['ref']} [{row['status']}] {row['model']} {row['metric']}="
+              f"{row['value']} (source={row['source']}, kind={row['observation_kind']}, "
+              f"scope={row['scope']})")
+
+
 def cmd_serve(args):
     token = (args.token or os.environ.get(servermod.TOKEN_ENV_VAR, "")).strip() or None
     try:
@@ -1581,6 +1653,46 @@ def build_parser() -> argparse.ArgumentParser:
     sdg.add_argument("--by-type", dest="by_type", default="tool",
                      choices=candmod.PROPOSER_TYPES)
     addj(sdg); sdg.set_defaults(func=cmd_delegate)
+
+    # perfcapture: the Lane-7 performance-capture adapter (ADR 0008). Reads
+    # ComputeConnect telemetry and files each observed model availability/perf fact
+    # as a PENDING model_performance candidate (human-promoted, never auto). No
+    # model calls. Bare `perfcapture` (or `perfcapture list`) is the read surface.
+    spc = sub.add_parser(
+        "perfcapture",
+        help="capture ComputeConnect telemetry as PENDING model_performance "
+             "candidates, or list what was captured (ADR 0008 Lane 7)")
+    pcsub = spc.add_subparsers(dest="pcmd")
+    pcl = pcsub.add_parser(
+        "list", help="captured telemetry candidates + trust status (deterministic)")
+    pcl.add_argument("--status", default="pending",
+                     choices=candmod.STATUSES + ("",),
+                     help="filter by candidate status ('' = all)")
+    addj(pcl); pcl.set_defaults(func=cmd_perfcapture)
+    pcc = pcsub.add_parser(
+        "capture",
+        help="read CC telemetry and file each observed fact as a PENDING candidate "
+             "(absent --cc-url -> CC unavailable -> nothing captured, no crash)")
+    pcc.add_argument("--cc-url", default="",
+                     help="ComputeConnect base URL for side-effect-free telemetry "
+                          "GETs (absent -> unavailable -> nothing captured)")
+    pcc.add_argument("--cc-token", default="")
+    pcc.add_argument("--estimate", action="store_true",
+                     help="also read the side-effect-free /route/estimate rationale "
+                          "and capture its heuristic numbers (kind=estimate)")
+    pcc.add_argument("--capability-class", dest="capability_class",
+                     default=registrymod.HIGH_CAPABILITY_LOCAL,
+                     help="tier whose structural capabilities frame the estimate")
+    pcc.add_argument("--input-tokens", type=int, default=0)
+    pcc.add_argument("--output-tokens", type=int, default=0)
+    pcc.add_argument("--privacy-tier", default=delegatemod.MOST_RESTRICTIVE_TIER,
+                     help="privacy tier sent with the estimate (unknown -> strictest)")
+    pcc.add_argument("--by", default="perfcapture", help="who is proposing the capture")
+    pcc.add_argument("--by-type", dest="by_type", default="tool",
+                     choices=candmod.PROPOSER_TYPES,
+                     help="proposer type (a proposer, never a promoter)")
+    addj(pcc); pcc.set_defaults(func=cmd_perfcapture)
+    addj(spc); spc.set_defaults(func=cmd_perfcapture, pcmd=None, status="pending")
 
     sub.add_parser("dump").set_defaults(func=cmd_dump)
 

@@ -22,7 +22,7 @@ everywhere.
 | 4 | Capability router + warm-aware swap-minimizing scheduler | **B** (fully) | AC (routing/residency) + CC (placement) | ✅ **done** — a thin BC delegation trigger (`cli/brainconnect/delegate.py` + `delegate_clients.py`, `brainconnect delegate`, [DELEGATION.md](DELEGATION.md)) assembles a request from **trusted** registry claims + a workload, calls AC `RoutingEngine.route` and CC `/route/estimate` through injectable clients, and records the returned decision + rationale as **PENDING** decision-provenance (never auto-promoted). Deterministic no-SPOF fallback when AC/CC are down/malformed/hostile; privacy is clamped and never widened. **Zero routing/placement math in BC.** AC's decision-only HTTP endpoint is the one gap (recon): BC binds the faithful `RoutingContext -> RoutingDecision` shape via an injectable client and smokes against a fake. | L3, L2 |
 | 5 | Unified knowledge abstraction (adapters → WikiBrain → graph → OKF → external), federating Decima knowledge | **A** (core) | BC | Extend LEDGER_SPEC §8 `RetrievalBackend` federation with a Decima-knowledge backend that reads `projections/knowledge.py` via the L2 contract and honors `instruction_eligible` exactly as BC honors `trusted`. **Federate, do not fork.** | L2 |
 | 6 | Multi-model collaboration roles (planning/coding/reviewer/verifier/docs) + independent verification | **B** (fully) | AC (D executes) | BC maps a plan's role requirements to existing AC model-manager profiles (`general_coder`/`coding_specialist`/`review_worker`/`critic`) and triggers AC `RouterService` decompose→execute→synthesize with `review.*` lifecycle; BC records the role-assignment as provenance. **No role engine/verifier in BC.** | L4 |
-| 7 | Performance (prompt caching, benchmarking, telemetry, queue analytics, load prediction) feeding the registry | **B** (measurement) + **A** (capture/promote loop) | CC/AC (measure) → BC (trusted capture) | A capture adapter ingesting CC/AC telemetry + benchmark outcomes as **pending** capability candidates (never auto-promoted), closing the loop into L1. First measured run against the live `qwen3-30b-a3b` node produces the first real `model_performance` numbers (as candidates awaiting human promotion). | L1, L4 |
+| 7 | Performance (prompt caching, benchmarking, telemetry, queue analytics, load prediction) feeding the registry | **B** (measurement) + **A** (capture/promote loop) | CC/AC (measure) → BC (trusted capture) | ✅ **BC capture side done** — `cli/brainconnect/perfcapture.py` + `brainconnect perfcapture` + [PERFCAPTURE.md](PERFCAPTURE.md). Reads CC's side-effect-free telemetry (`/health`, `/models`, `/models/loaded`, optional `/route/estimate` rationale) through an injectable bounded client and files each observed model availability/perf fact as a **PENDING** `model_performance` candidate — source-labelled (`kind` `measured` vs `estimate`), `model:`-scoped, safety-scanned, idempotent (unforgeable per-observation fingerprint), **never auto-promoted**. The deployed-model refresh is a captured candidate, not a mutation of the trusted claim. **Zero model calls; no fabricated numbers.** MEASUREMENT stays delegated to CC/AC. | L1, L4 |
 | 8 | Observability (queued work, active agents, utilization, provider health, routing decisions, timelines, token accounting, swap history) | **B** (fully) | AC (event model) | BC emits its orchestration decisions (registry promotion, delegation trigger, role assignment) **into** the existing `AgentObservabilityProvider` using the shipped `EventType` vocabulary. **No parallel event stream/timeline/token ledger in BC.** | L4, L6 |
 
 ## Binding prohibitions (from ADR 0008)
@@ -89,6 +89,22 @@ everywhere.
   endpoint yet, so BC binds the faithful `RoutingContext -> RoutingDecision`
   shape via an injectable client and smokes against a fake — when AC ships the
   endpoint, only the client URL changes.
-- **Lanes 2, 5–8:** planned. Lane 4 is unblocked and shipped; Lane 5 (the unified
+- **Lane 7 (performance capture, BC side):** ✅ complete — a thin capture adapter
+  reads ComputeConnect's side-effect-free telemetry (`/health`, `/models`,
+  `/models/loaded`, and an optional `/route/estimate` rationale) through an
+  injectable bounded client and files each observed model availability/performance
+  fact as a **PENDING** `model_performance` candidate: source-labelled
+  (`source=computeconnect-telemetry`, `kind` `measured` vs `estimate`),
+  `model:`-scoped, safety-scanned (a secret in a telemetry field is masked, never
+  stored raw), and idempotent by an unforgeable per-observation fingerprint (a
+  re-run dedupes, a changed value is captured, a genuine new observation is never
+  suppressed). **Never auto-promoted** — promotion stays human/librarian-only; the
+  deployed-model refresh (e.g. `Qwen3.6-35B-A3B` on the live node) is captured as a
+  candidate and never auto-mutates the trusted `deployed` claim. **Zero model
+  calls; no fabricated numbers** — MEASUREMENT stays delegated to CC/AC. Code in
+  `cli/brainconnect/perfcapture.py` + `cli/brainconnect/delegate_clients.py`
+  (`HttpTelemetryClient`), CLI `brainconnect perfcapture`, contract in
+  [PERFCAPTURE.md](PERFCAPTURE.md).
+- **Lanes 2, 5, 6, 8:** planned. Lanes 4 and 7 are shipped; Lane 5 (the unified
   knowledge abstraction federating Decima knowledge) is next, pending the Lane 2
   Decima read-contract.

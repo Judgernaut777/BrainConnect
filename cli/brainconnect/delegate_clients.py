@@ -111,6 +111,23 @@ class EstimateClient(Protocol):
     def estimate(self, body: dict, *, privacy_header: str | None = None) -> dict: ...
 
 
+@runtime_checkable
+class TelemetryClient(Protocol):
+    """Injectable ComputeConnect *telemetry* reader (ADR 0008 Lane 7).
+
+    Reads ONLY ComputeConnect's side-effect-free control-plane telemetry — the
+    documented `GET /health`, `GET /models`, `GET /models/loaded` surfaces
+    (CONTRACT.md Layer 1). It is deliberately incapable of generation: there is no
+    method that reaches `/generate` or any OpenAI chat path. Reading residency and
+    health is a service call, never a model call, so the key-free/model-free CLI
+    boundary is preserved. Any transport failure raises `DelegationClientError`.
+    """
+
+    def health(self) -> dict: ...
+
+    def models(self, *, loaded_only: bool = False) -> dict: ...
+
+
 # --- HTTP implementations ----------------------------------------------------
 def _read_bounded(resp, *, provider: str, safe_url: str, max_bytes: int,
                   start: float, deadline: float) -> bytes:
@@ -181,6 +198,45 @@ def _post_json(url: str, payload: dict, *, provider: str, token: str | None,
     return obj
 
 
+def _get_json(url: str, *, provider: str, token: str | None, timeout: float,
+              extra_headers: dict | None = None,
+              deadline: float = DEFAULT_DEADLINE,
+              max_bytes: int = MAX_RESPONSE_BYTES) -> dict:
+    """GET JSON, return the parsed JSON object. Same single-failure-class contract
+    as `_post_json`: any transport/HTTP/decode/oversize/deadline problem raises
+    `DelegationClientError` and never emits URL userinfo (credentials). A GET is
+    side-effect-free — this is used ONLY for ComputeConnect telemetry reads, never
+    for generation."""
+    safe_url = _redact_url(url)
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw_bytes = _read_bounded(
+                resp, provider=provider, safe_url=safe_url, max_bytes=max_bytes,
+                start=start, deadline=deadline)
+    except DelegationClientError:
+        raise
+    except urllib.error.HTTPError as e:
+        raise DelegationClientError(provider, f"HTTP {e.code} from {safe_url}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise DelegationClientError(
+            provider, f"unreachable {safe_url}: {type(e).__name__}") from e
+    raw = raw_bytes.decode("utf-8", "ignore")
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise DelegationClientError(provider, f"non-JSON body from {safe_url}") from e
+    if not isinstance(obj, dict):
+        raise DelegationClientError(provider, f"non-object body from {safe_url}")
+    return obj
+
+
 class HttpRoutingClient:
     """POSTs a `RoutingContext` to an AgentConnect decision endpoint.
 
@@ -227,3 +283,35 @@ class HttpEstimateClient:
                           token=self._token, timeout=self._timeout,
                           extra_headers=extra, deadline=self._deadline,
                           max_bytes=self._max_bytes)
+
+
+class HttpTelemetryClient:
+    """Reads ComputeConnect telemetry over its shipped, side-effect-free control
+    GETs (ADR 0008 Lane 7): `GET /health`, `GET /models`, `GET /models/loaded`.
+
+    There is NO generation method here by construction — this client cannot reach
+    `/generate` or any chat path even if asked, which is what keeps the
+    performance-capture adapter model-call-free. Each read is bounded by the same
+    byte cap + wall-clock deadline as every other delegate client.
+    """
+
+    def __init__(self, base_url: str, *, token: str | None = None,
+                 timeout: float = DEFAULT_TIMEOUT,
+                 deadline: float = DEFAULT_DEADLINE,
+                 max_bytes: int = MAX_RESPONSE_BYTES):
+        self._base = base_url.rstrip("/")
+        self._token = token
+        self._timeout = timeout
+        self._deadline = deadline
+        self._max_bytes = max_bytes
+
+    def _get(self, path: str) -> dict:
+        return _get_json(self._base + path, provider=COMPUTECONNECT,
+                         token=self._token, timeout=self._timeout,
+                         deadline=self._deadline, max_bytes=self._max_bytes)
+
+    def health(self) -> dict:
+        return self._get("/health")
+
+    def models(self, *, loaded_only: bool = False) -> dict:
+        return self._get("/models/loaded" if loaded_only else "/models")

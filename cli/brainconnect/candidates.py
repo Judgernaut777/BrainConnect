@@ -54,7 +54,20 @@ PROMOTION_EVIDENCE_TYPE = "asserted"
 # agent can neither impersonate a canonical registry fact nor suppress one. Reserved
 # keys are a closed set so the guard is total.
 REGISTRY_CANONICAL_KEY = "registry_canonical"
-_RESERVED_METADATA_KEYS = (REGISTRY_CANONICAL_KEY,)
+
+# A perfcapture-OWNED, unforgeable per-observation fingerprint (ADR 0008 Lane 7).
+# The performance-capture adapter (perfcapture.py) files telemetry observations as
+# PENDING candidates and dedupes them by this marker: a re-run that sees the SAME
+# (source, subject, metric, value) observation finds the marker and does not file a
+# duplicate, while a CHANGED value produces a different fingerprint and IS filed
+# (never silently suppressed). Like the registry marker it can be written ONLY by an
+# internal caller passing the dedicated `perfcapture_observation` argument; a public
+# caller cannot forge it through the `metadata` dict (it is stripped below), so an
+# agent can neither impersonate a captured telemetry fact nor suppress a new one by
+# pre-filing its fingerprint.
+PERFCAPTURE_OBSERVATION_KEY = "perfcapture_observation"
+
+_RESERVED_METADATA_KEYS = (REGISTRY_CANONICAL_KEY, PERFCAPTURE_OBSERVATION_KEY)
 
 
 class CandidateError(Exception):
@@ -124,6 +137,7 @@ def create_checked(repo: Repo, text: str, *, proposed_by: str, proposed_by_type:
                    tags: list[str] | None = None, metadata: dict | None = None,
                    harness: str | None = None,
                    registry_canonical: str | None = None,
+                   perfcapture_observation: str | None = None,
                    ) -> tuple[int, "safety.SafetyResult"]:
     """File a PENDING memory candidate. Never promotes, by construction.
 
@@ -165,6 +179,8 @@ def create_checked(repo: Repo, text: str, *, proposed_by: str, proposed_by_type:
         meta.pop(reserved, None)
     if registry_canonical is not None:
         meta[REGISTRY_CANONICAL_KEY] = registry_canonical
+    if perfcapture_observation is not None:
+        meta[PERFCAPTURE_OBSERVATION_KEY] = perfcapture_observation
     if not verdict.clean:
         # An audit-safe record that capture was attempted and what was seen. It
         # holds spans and rule names, never the matched value.

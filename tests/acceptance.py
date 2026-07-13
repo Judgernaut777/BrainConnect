@@ -4212,6 +4212,9 @@ def main():
     # ---------------- Delegation trigger (ADR 0008 Lane 4) -------------------
     _delegation_checks()
 
+    # ---------------- Performance capture (ADR 0008 Lane 7) ------------------
+    _perfcapture_checks()
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
@@ -5104,6 +5107,321 @@ def _delegation_checks():
     else:
         check("delegate LIVE smoke skipped (set BRAINCONNECT_LANE4_LIVE + "
               "BRAINCONNECT_AC_URL/BRAINCONNECT_CC_URL to run it)", True)
+
+
+def _perfcapture_checks():
+    """The performance-capture adapter (ADR 0008 Lane 7).
+
+    BC reads ComputeConnect telemetry through an injected client and files each
+    observed model availability/performance fact as a PENDING model_performance
+    candidate. Verified here: captured facts land as PENDING (never trusted/
+    promoted); source-labelled (source=computeconnect-telemetry, kind estimate|
+    measured); an agent/worker principal still cannot promote them; CC-unavailable
+    => no crash, nothing captured; idempotent re-capture (no dup) but a CHANGED
+    observation IS captured; captured telemetry is safety-scanned (a secret in a
+    telemetry field is masked, not stored raw); deterministic listing; and NO model
+    (generation) call is ever made. The deployed-model refresh (requirement 2) is
+    captured as a PENDING candidate — the trusted registry claim is NOT auto-mutated.
+    """
+    print("[perfcapture] Lane 7: capture CC telemetry as PENDING model_performance "
+          "candidates, source-labelled, human-promoted, idempotent, no model calls")
+    import re as _re
+    from brainconnect import perfcapture as pcmod
+    from brainconnect import delegate_clients as dclients
+    from brainconnect import api as apimod, candidates as candmod, registry as regmod
+    from brainconnect.db import Repo
+
+    proot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-lane7-")))
+
+    # -- in-process telemetry fakes honouring the CC CONTRACT.md shapes ----------
+    class FakeCC:
+        """Records which methods were called; NO generation method exists."""
+        def __init__(self, model="qwen3-30b-a3b"):
+            self.model = model
+            self.calls = []
+        def health(self):
+            self.calls.append("health")
+            return {"status": "ok", "service": "computeconnect",
+                    "providers": {"wiki-llama": {"healthy": True,
+                                                 "placement_class": "local"}}}
+        def models(self, *, loaded_only=False):
+            self.calls.append(("models", loaded_only))
+            return {"models": [{"id": self.model, "runtime": "llama.cpp",
+                     "loaded": True, "capabilities": ["code", "reasoning"],
+                     "context_tokens": 16384,
+                     "metadata": {"provider_id": "wiki-llama",
+                                  "placement_class": "local"}}]}
+
+    class FakeEstimate:
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": True, "selected_model": "qwen3-30b-a3b",
+                    "runtime": "llama.cpp", "loaded": True,
+                    "estimated_queue_seconds": 0.0,
+                    "estimated_tokens_per_second": 42.0, "estimated_quality": 0.8,
+                    "reason": {"provider_id": "wiki-llama", "placement_class": "local"}}
+
+    class DownCC:
+        """Every telemetry read is an outage — the adapter must not crash."""
+        def health(self):
+            raise dclients.DelegationClientError(dclients.COMPUTECONNECT, "connection refused")
+        def models(self, *, loaded_only=False):
+            raise dclients.DelegationClientError(dclients.COMPUTECONNECT, "connection refused")
+
+    # -- capture files PENDING, source-labelled, model-scoped candidates ---------
+    fcc = FakeCC()
+    with Repo.open(start=proot) as r:
+        res = pcmod.capture(r, telemetry_client=fcc, estimate_client=FakeEstimate(),
+                            estimate_body={"required_capabilities": ["code"]},
+                            observed_at="run-1")
+    check("perfcapture: a capture reports CC available and files PENDING candidates "
+          "(1 availability + 3 estimate metrics = 4 observations)",
+          res.cc_available is True and res.observed == 4
+          and len(res.captured) == 4 and res.duplicates == 0)
+    with Repo.open(start=proot) as r:
+        n_pending = r.one("SELECT COUNT(*) n FROM memory_candidates "
+                          "WHERE status='pending'")["n"]
+        n_claims = r.one("SELECT COUNT(*) n FROM claims")["n"]
+    check("perfcapture: every captured fact is PENDING and NOTHING was auto-promoted "
+          "(no claims exist)",
+          n_pending == 4 and n_claims == 0)
+
+    with Repo.open(start=proot) as r:
+        listed = pcmod.listing(r)
+    avail = next(x for x in listed if x["metric"] == "loaded")
+    est_q = next(x for x in listed if x["metric"] == "estimated_quality")
+    check("perfcapture: the availability fact is SOURCE-LABELLED "
+          "(source=computeconnect-telemetry, kind=measured) and model-scoped",
+          avail["source"] == "computeconnect-telemetry"
+          and avail["observation_kind"] == "measured"
+          and avail["scope"] == "model:qwen3-30b-a3b"
+          and avail["trusted"] is False)
+    check("perfcapture: a /route/estimate metric is labelled kind=estimate (CC's "
+          "operator heuristic), NOT a fabricated measured benchmark",
+          est_q["observation_kind"] == "estimate" and est_q["value"] == 0.8)
+    with Repo.open(start=proot) as r:
+        avail_cand = candmod.get(r, refsmod.parse(avail["ref"], refsmod.CANDIDATE))
+    check("perfcapture: the captured candidate binds the §7 model_performance profile "
+          "tag and carries the source label as a tag",
+          "model-performance" in avail_cand["tags"]
+          and "source:computeconnect-telemetry" in avail_cand["tags"])
+    check("perfcapture: the captured candidate declares itself provenance-only / "
+          "not-trusted in metadata (never a trust signal)",
+          avail_cand["metadata"].get("provenance_only") is True
+          and avail_cand["metadata"].get("trusted") is False)
+
+    # -- an agent / worker principal CANNOT promote a captured candidate ---------
+    def _promote_pc(reviewer_type):
+        with Repo.open(start=proot) as r:
+            apimod.promote(r, avail["ref"], reviewer="self", confidence="high",
+                           scope="model:qwen3-30b-a3b", reviewer_type=reviewer_type)
+    check("perfcapture: a WORKER principal cannot promote a captured telemetry fact",
+          _raises(candmod.ReviewerNotPermitted, _promote_pc, "worker"))
+    check("perfcapture: an AGENT principal cannot promote a captured telemetry fact",
+          _raises(candmod.ReviewerNotPermitted, _promote_pc, "agent"))
+    with Repo.open(start=proot) as r:
+        check("perfcapture: the refused self-promotions left ZERO promoted claims",
+              r.one("SELECT COUNT(*) n FROM claims")["n"] == 0)
+
+    # -- idempotent re-capture: identical observations dedupe (no dup) -----------
+    with Repo.open(start=proot) as r:
+        res2 = pcmod.capture(r, telemetry_client=FakeCC(), estimate_client=FakeEstimate(),
+                             estimate_body={"required_capabilities": ["code"]},
+                             observed_at="run-2-different-timestamp")
+    check("perfcapture: re-capturing identical observations files NO duplicate "
+          "(deduped by the unforgeable fingerprint, timestamp change ignored)",
+          len(res2.captured) == 0 and res2.duplicates == 4)
+    with Repo.open(start=proot) as r:
+        check("perfcapture: the idempotent re-run created no new candidate rows",
+              r.one("SELECT COUNT(*) n FROM memory_candidates")["n"] == 4)
+
+    # -- a CHANGED observation IS captured (not silently suppressed) -------------
+    class ChangedCC(FakeCC):
+        def models(self, *, loaded_only=False):
+            return {"models": [{"id": "qwen3-30b-a3b", "runtime": "llama.cpp",
+                     "loaded": True,
+                     "metadata": {"provider_id": "wiki-llama",
+                                  "placement_class": "local"}}]}
+    class ChangedEstimate:
+        def estimate(self, body, *, privacy_header=None):
+            out = FakeEstimate().estimate(body)
+            out["estimated_tokens_per_second"] = 55.0  # a genuinely new value
+            return out
+    with Repo.open(start=proot) as r:
+        res3 = pcmod.capture(r, telemetry_client=ChangedCC(),
+                             estimate_client=ChangedEstimate(),
+                             estimate_body={"required_capabilities": ["code"]},
+                             observed_at="run-3")
+    check("perfcapture: a CHANGED metric value IS captured as a new PENDING candidate "
+          "(idempotency never suppresses a genuinely new observation)",
+          len(res3.captured) == 1 and res3.duplicates == 3)
+
+    # -- CC unavailable => no crash, nothing captured ---------------------------
+    with Repo.open(start=proot) as r:
+        before = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+        res_none = pcmod.capture(r, telemetry_client=None, observed_at="run-x")
+        res_down = pcmod.capture(r, telemetry_client=DownCC(), observed_at="run-y")
+        after = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+    check("perfcapture: no client -> CC unavailable, nothing captured, clean report "
+          "(no crash)",
+          res_none.cc_available is False and res_none.captured == []
+          and res_none.errors)
+    check("perfcapture: a telemetry outage (DelegationClientError) -> nothing "
+          "captured, clean report, does not crash",
+          res_down.cc_available is False and res_down.captured == []
+          and before == after)
+
+    # -- captured telemetry is safety-scanned: a secret is masked, not stored raw
+    _secret = "sk-" + "B" * 32
+    class SecretCC(FakeCC):
+        def models(self, *, loaded_only=False):
+            return {"models": [{"id": "leaky-model", "runtime": _secret,
+                     "loaded": True,
+                     "metadata": {"provider_id": "wiki-llama",
+                                  "placement_class": "local"}}]}
+    with Repo.open(start=proot) as r:
+        res_sec = pcmod.capture(r, telemetry_client=SecretCC(), observed_at="run-s")
+        sec_rows = [x for x in pcmod.listing(r, status=None)
+                    if x["model"] == "leaky-model"]
+        raw_leaked = False
+        if sec_rows:
+            sc = candmod.get(r, refsmod.parse(sec_rows[0]["ref"], refsmod.CANDIDATE))
+            raw_leaked = _secret in json.dumps(sc)
+    # Masking happens BEFORE the text is written anywhere, so neither the candidate
+    # row nor its on-disk inbox evidence artifact may contain the raw credential.
+    for _f in Path(proot).rglob("*"):
+        if _f.is_file():
+            try:
+                if _secret in _f.read_text(encoding="utf-8", errors="ignore"):
+                    raw_leaked = True
+                    break
+            except OSError:
+                pass
+    check("perfcapture: a secret in a telemetry field is safety-scanned and MASKED — "
+          "the raw credential is never stored in the candidate or its evidence",
+          bool(sec_rows) and raw_leaked is False)
+
+    # -- deterministic listing ---------------------------------------------------
+    with Repo.open(start=proot) as r:
+        la = pcmod.listing(r)
+        lb = pcmod.listing(r)
+    check("perfcapture: listing() is deterministic (two reads are byte-identical, "
+          "stable order)",
+          json.dumps(la, sort_keys=True) == json.dumps(lb, sort_keys=True)
+          and [x["ref"] for x in la] == sorted(
+              [x["ref"] for x in la], key=lambda s: int(s.split("_")[1])))
+
+    # -- NO model (generation) call is ever made --------------------------------
+    import inspect as _inspect
+    check("perfcapture: the adapter's telemetry client exposes NO generation method "
+          "(no `generate`/chat attribute on HttpTelemetryClient)",
+          not hasattr(dclients.HttpTelemetryClient, "generate")
+          and not hasattr(dclients.HttpTelemetryClient, "chat"))
+    # Check the executable CODE (docstring prose stripped) never names a generation
+    # endpoint — the adapter delegates HTTP to the telemetry client, and that client
+    # builds only /health + /models paths, never /generate or a chat completion.
+    pc_code = _strip_docstrings(_inspect.getsource(pcmod))
+    tc_code = _strip_docstrings(_telemetry_client_source(dclients))
+    check("perfcapture: neither the adapter nor its telemetry client CODE references "
+          "a generation endpoint (/generate, chat/completions)",
+          "/generate" not in pc_code and "chat/completions" not in pc_code
+          and "/generate" not in tc_code and "chat/completions" not in tc_code)
+    check("perfcapture: the capture run only ever invoked telemetry reads "
+          "(health/models), never a generation call",
+          set(c if isinstance(c, str) else c[0] for c in fcc.calls) <= {"health", "models"})
+
+    # -- the DEPLOYED-model refresh flows through the human gate (requirement 2) --
+    # CC reports a NEW loaded model. It must be CAPTURED as a PENDING candidate; the
+    # registry's TRUSTED deployed claim must NOT be auto-mutated by the capture.
+    droot = make_repo(Path(tempfile.mkdtemp(prefix="wikibrain-lane7-deploy-")))
+    with Repo.open(start=droot) as r:
+        regmod.seed(r)  # seeds the declared deployed=qwen3-30b-a3b as PENDING
+        deployed_before = regmod.deployed_model("high-capability-local")
+        res_dep = pcmod.capture(r, telemetry_client=FakeCC(model="Qwen3.6-35B-A3B"),
+                               observed_at="run-deploy")
+        dep_rows = [x for x in pcmod.listing(r)
+                    if x["model"] == "Qwen3.6-35B-A3B" and x["metric"] == "loaded"]
+        deployed_after = regmod.deployed_model("high-capability-local")
+    check("perfcapture: a newly-loaded model reported by CC is captured as a PENDING "
+          "candidate (the deployed-model refresh, requirement 2)",
+          len(res_dep.captured) >= 1 and len(dep_rows) == 1
+          and dep_rows[0]["status"] == "pending" and dep_rows[0]["trusted"] is False)
+    check("perfcapture: capturing the loaded model does NOT auto-mutate the registry's "
+          "trusted deployed claim — the correction flows through the human gate",
+          deployed_before == "qwen3-30b-a3b" and deployed_after == "qwen3-30b-a3b")
+
+    # -- a HUMAN can promote a captured fact (closing the Lane-1 loop) -----------
+    with Repo.open(start=droot) as r:
+        apimod.promote(r, dep_rows[0]["ref"], reviewer="matthew", confidence="high",
+                       scope="model:Qwen3.6-35B-A3B", reviewer_type="human")
+        promoted = pcmod.listing(r, status="promoted")
+    check("perfcapture: a HUMAN reviewer CAN promote a captured telemetry fact — the "
+          "loop into the trusted registry is closed by the human gate",
+          any(x["model"] == "Qwen3.6-35B-A3B" for x in promoted))
+
+    # -- the CLI read + capture surfaces exist and honour --json ----------------
+    from brainconnect import cli as _cli
+
+    def _exit(argv):
+        try:
+            _cli.main(argv)
+            return 0
+        except SystemExit as e:
+            return e.code or 0
+
+    _prev = os.getcwd()
+    os.chdir(proot)
+    import contextlib as _ctx
+    out_list = Path(proot) / "pc_list.json"
+    out_noop = Path(proot) / "pc_noop.txt"
+    try:
+        with open(out_list, "w", encoding="utf-8") as fh, _ctx.redirect_stdout(fh):
+            code_list = _exit(["perfcapture", "list", "--json"])
+        # capture with NO --cc-url: CC unavailable -> clean no-op, exit 0, no crash.
+        with open(out_noop, "w", encoding="utf-8") as fh, _ctx.redirect_stdout(fh):
+            code_noop = _exit(["perfcapture", "capture"])
+    finally:
+        os.chdir(_prev)
+    cli_list = json.loads(out_list.read_text(encoding="utf-8")) if out_list.is_file() else None
+    check("perfcapture CLI: `perfcapture list --json` exits 0 and emits the captured "
+          "telemetry candidates with their source label + trust status",
+          code_list == 0 and isinstance(cli_list, list) and len(cli_list) >= 1
+          and all(x["source"] == "computeconnect-telemetry"
+                  and x["trusted"] is False for x in cli_list))
+    check("perfcapture CLI: `perfcapture capture` with no --cc-url is a clean no-op "
+          "(CC unavailable), exits 0, does not crash",
+          code_noop == 0 and "unavailable" in out_noop.read_text(encoding="utf-8"))
+
+
+def _strip_docstrings(src: str) -> str:
+    """Return `src` with module/function/class docstrings removed, so a prose
+    mention of a forbidden token (e.g. `/generate` in a boundary comment) never
+    trips a code-level check. Falls back to the raw source if it cannot parse."""
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError:
+        return src
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                             _ast.ClassDef, _ast.Module)):
+            body = getattr(node, "body", [])
+            if (body and isinstance(body[0], _ast.Expr)
+                    and isinstance(getattr(body[0], "value", None), _ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body[0].value.value = ""
+    try:
+        return _ast.unparse(tree)
+    except Exception:  # noqa: BLE001
+        return src
+
+
+def _telemetry_client_source(dclients) -> str:
+    """The source of the telemetry client + its GET helper only — so the /generate
+    check targets the perfcapture transport, not the whole delegate_clients module
+    (which legitimately mentions no generation either, but scoping keeps the intent
+    clear)."""
+    import inspect as _inspect
+    return (_inspect.getsource(dclients.HttpTelemetryClient)
+            + _inspect.getsource(dclients.TelemetryClient))
 
 
 def _promote_registry(root, ref, reviewer_type):
