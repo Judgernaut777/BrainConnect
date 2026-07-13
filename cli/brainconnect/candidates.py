@@ -188,6 +188,26 @@ def create_checked(repo: Repo, text: str, *, proposed_by: str, proposed_by_type:
     if quarantined:
         meta["quarantined"] = True
 
+    # STRUCTURAL LEDGER GUARD (untrusted-capture poison defense). A non-finite JSON
+    # number — NaN / Infinity / -Infinity — is ACCEPTED by json.loads but json.dumps
+    # writes it back as a BARE `NaN`/`Infinity` token, which is INVALID JSON. Once
+    # such a value lands in a candidate's `metadata`, SQLite's `json_extract` raises
+    # "malformed JSON" on that row for EVERY later read, permanently breaking
+    # perfcapture listing/dedup AND the registry snapshot / :8787 trusted view. So
+    # metadata is serialized with allow_nan=False HERE — before any inbox artifact or
+    # row is written — and a non-finite value fails cleanly (never persisted) from
+    # ANY capture path: delegate provenance, perfcapture telemetry, or a direct
+    # caller. This is the belt to the delegate-clients ingress braces (which already
+    # refuse a non-finite engine body); either alone is sufficient, together they are
+    # total. Every degrade-never-crash boundary (perfcapture._capture_one,
+    # delegate._record_provenance) already catches CandidateError as a clean skip.
+    try:
+        meta_json = json.dumps(meta, sort_keys=True, allow_nan=False)
+    except ValueError as e:
+        raise CandidateError(
+            "candidate metadata carries a non-finite value (NaN/Infinity); refusing "
+            "to persist invalid JSON that would poison the ledger") from e
+
     if source_id is None:
         # ingest.capture files the inbox artifact + a `new` source and finalizes.
         source_id = ingest.capture(repo, harness or util.slug(proposed_by, 40), text)
@@ -203,7 +223,7 @@ def create_checked(repo: Repo, text: str, *, proposed_by: str, proposed_by_type:
          scopes.dumps(proposed_scopes or []),
          json.dumps(sorted(tags or [])),
          util.now_iso(),
-         json.dumps(meta, sort_keys=True)))
+         meta_json))
     cid = cur.lastrowid
     note = f"{refs.candidate(cid)} pending, proposed by {proposed_by}"
     if quarantined:
@@ -354,7 +374,8 @@ def promote(repo: Repo, cid: int, *, reviewer: str, confidence: str, scope: Scop
                   SET status='promoted', promoted_claim_id=?, reviewed_at=?,
                       reviewed_by=?, review_reason=?, metadata=?
                 WHERE id=? AND status='pending'""",
-            (claim_id, now, reviewer, note, json.dumps(meta, sort_keys=True), cid))
+            (claim_id, now, reviewer, note,
+             json.dumps(meta, sort_keys=True, allow_nan=False), cid))
         if updated.rowcount != 1:
             # Another promotion won the race between our status read and this
             # write. Abandon the claim we just inserted; the winner stands.

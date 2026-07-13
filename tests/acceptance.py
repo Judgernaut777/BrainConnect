@@ -5089,6 +5089,143 @@ def _delegation_checks():
         check("delegate FIX4 (conformance) SKIPPED: neither AgentConnect nor "
               "ComputeConnect importable in this venv", True)
 
+    # =====================================================================
+    # Lane-7 FIXER adversarial regressions in the SHARED delegate_clients
+    # transport, proven here on the DELEGATE (Lane 4) path (the same two bugs
+    # are proven on the perfcapture path in _perfcapture_checks):
+    #   BLOCKER — non-finite JSON (NaN/Infinity/-Infinity) poisons the ledger.
+    #   HIGH    — a deeply-nested body raises RecursionError and crashed capture.
+    # =====================================================================
+
+    # -- BLOCKER (ingress): a CC estimate body with bare NaN/Infinity tokens ------
+    class _NonFiniteHandler(_hs.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+        def _send(self, body):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def do_GET(self):
+            self._send(b'{"status": NaN}')
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            # eligible=true would pass shape validation; the metrics + an arbitrary
+            # field are the non-standard constants json.loads accepts by default.
+            self._send(b'{"eligible": true, "selected_model": "m", '
+                       b'"estimated_quality": NaN, "estimated_tokens_per_second": Infinity, '
+                       b'"estimated_queue_seconds": -Infinity, "arbitrary": NaN, '
+                       b'"reason": {"placement_class": "local_resident"}}')
+    _nfsrv = _hs.HTTPServer(("127.0.0.1", 0), _NonFiniteHandler)
+    _thr.Thread(target=_nfsrv.serve_forever, daemon=True).start()
+    _nfport = _nfsrv.server_address[1]
+    try:
+        _nf_ec = dclients.HttpEstimateClient(f"http://127.0.0.1:{_nfport}", path="/route/estimate")
+        _nf_est_raised = _raises(dclients.DelegationClientError, _nf_ec.estimate, {"x": 1})
+        _nf_tc = dclients.HttpTelemetryClient(f"http://127.0.0.1:{_nfport}")
+        _nf_health_raised = _raises(dclients.DelegationClientError, _nf_tc.health)
+        with Repo.open(start=droot) as r:
+            r_nf = dmod.delegate(r, {"task_id": "task-nonfinite-cc",
+                "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+                routing_client=FakeAC(),
+                estimate_client=dclients.HttpEstimateClient(
+                    f"http://127.0.0.1:{_nfport}", path="/route/estimate"))
+    finally:
+        _nfsrv.shutdown()
+    check("delegate FIX1(ingress): a CC estimate body carrying NaN/Infinity/-Infinity "
+          "(in quality/tps/queue AND an arbitrary field) is REFUSED by the shared "
+          "_post_json (parse_constant) as a DelegationClientError",
+          _nf_est_raised)
+    check("delegate FIX1(ingress): a telemetry /health body carrying a non-finite "
+          "constant is likewise refused by the shared _get_json guard",
+          _nf_health_raised)
+    check("delegate FIX1(ingress): a non-finite CC estimate -> CC treated unavailable "
+          "-> deterministic safe fallback, delegate() does not crash",
+          r_nf.fallback is True and r_nf.delegated is False)
+
+    # -- BLOCKER (structural DB guard): an in-process CC past the HTTP ingress ------
+    class _NonFiniteFakeCC:
+        """Bypasses the HTTP ingress entirely — returns a shape-valid, ON-BOX estimate
+        whose metric values are non-finite, so the decision would be recorded as
+        provenance and only the structural DB guard can stop the poison."""
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": True, "selected_model": "qwen3-30b-a3b",
+                    "runtime": "llama.cpp", "loaded": True,
+                    "estimated_queue_seconds": 0.0,
+                    "estimated_tokens_per_second": float("inf"),
+                    "estimated_quality": float("nan"),
+                    "reason": {"provider_id": "wiki-llama",
+                               "placement_class": "local_resident", "model": "qwen3-30b-a3b"}}
+    with Repo.open(start=droot) as r:
+        _db_before = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+        r_dbnf = dmod.delegate(r, {"task_id": "task-nonfinite-fake",
+            "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+            routing_client=FakeAC(), estimate_client=_NonFiniteFakeCC())
+        _db_after = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+    check("delegate FIX1(DB guard): a non-finite value from an in-process CC (past the "
+          "HTTP ingress) is REFUSED at serialization (allow_nan=False) -> provenance "
+          "capture degrades to a note, delegate() does not crash, NO poisoned row is "
+          "persisted",
+          r_dbnf.provenance_ref is None and _db_after == _db_before
+          and any("capture failed" in e for e in r_dbnf.errors))
+
+    # -- READ SURFACES stay healthy after the non-finite attacks ------------------
+    with Repo.open(start=droot) as r:
+        _rs_snap_ok = isinstance(regmod.snapshot(r), dict)
+        _rs_tv_ok = isinstance(regmod.trusted_view(r), dict)
+        _rs_list_ok = isinstance(candmod.listing(r, status=None, limit=500), list)
+        try:  # json_extract over EVERY row raises "malformed JSON" if any is poisoned
+            r.q("SELECT json_extract(metadata,'$.kind') FROM memory_candidates")
+            _rs_sweep_ok = True
+        except Exception:  # noqa: BLE001
+            _rs_sweep_ok = False
+    check("delegate FIX1: after the non-finite attacks, ALL ledger read surfaces are "
+          "still healthy — registry.snapshot, registry.trusted_view (the :8787 view), "
+          "candidate listing, and a json_extract sweep over every row all succeed "
+          "(nothing was poisoned)",
+          _rs_snap_ok and _rs_tv_ok and _rs_list_ok and _rs_sweep_ok)
+
+    # -- HIGH (deeply-nested crash): RecursionError -> DelegationClientError --------
+    _deep = b"[" * 60000 + b"]" * 60000  # ~117 KiB, well under the 256 KiB cap
+    class _DeepHandler(_hs.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+        def _send(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_deep)))
+            self.end_headers()
+            self.wfile.write(_deep)
+        def do_GET(self):
+            self._send()
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self._send()
+    _dpsrv = _hs.HTTPServer(("127.0.0.1", 0), _DeepHandler)
+    _thr.Thread(target=_dpsrv.serve_forever, daemon=True).start()
+    _dpport = _dpsrv.server_address[1]
+    try:
+        _dp_ec = dclients.HttpEstimateClient(f"http://127.0.0.1:{_dpport}", path="/route/estimate")
+        _dp_est_raised = _raises(dclients.DelegationClientError, _dp_ec.estimate, {"x": 1})
+        _dp_tc = dclients.HttpTelemetryClient(f"http://127.0.0.1:{_dpport}")
+        _dp_health_raised = _raises(dclients.DelegationClientError, _dp_tc.health)
+        with Repo.open(start=droot) as r:
+            r_deep = dmod.delegate(r, {"task_id": "task-deepnest",
+                "capability_class": "high-capability-local", "privacy_tier": "repo_sensitive"},
+                routing_client=FakeAC(),
+                estimate_client=dclients.HttpEstimateClient(
+                    f"http://127.0.0.1:{_dpport}", path="/route/estimate"))
+    finally:
+        _dpsrv.shutdown()
+    check("delegate FIX2: a deeply-nested JSON body (RecursionError — a RuntimeError, "
+          "NOT a ValueError) on BOTH /route/estimate (POST) and /health (GET) is "
+          "converted to DelegationClientError by the shared client, not left to crash",
+          _dp_est_raised and _dp_health_raised)
+    check("delegate FIX2: a deeply-nested CC body -> deterministic safe fallback, "
+          "delegate() never crashes",
+          r_deep.fallback is True and r_deep.delegated is False)
+
     # -- guarded LIVE smoke against a real AC/CC (skipped by default) -------------
     _live = os.environ.get("BRAINCONNECT_LANE4_LIVE", "").strip()
     if _live:
@@ -5357,6 +5494,173 @@ def _perfcapture_checks():
     check("perfcapture: a HUMAN reviewer CAN promote a captured telemetry fact — the "
           "loop into the trusted registry is closed by the human gate",
           any(x["model"] == "Qwen3.6-35B-A3B" for x in promoted))
+
+    # =====================================================================
+    # Lane-7 FIXER adversarial regressions on the SHARED delegate_clients
+    # transport (used by BOTH perfcapture.capture and delegate). Two bugs:
+    #   BLOCKER — a non-finite JSON constant (NaN/Infinity/-Infinity) in a CC
+    #     body is accepted by json.loads, flows into candidate metadata, and
+    #     json.dumps writes it as BARE NaN => INVALID JSON that makes SQLite's
+    #     json_extract raise "malformed JSON" on that row forever (poisons
+    #     perfcapture.listing, dedup, AND registry.snapshot/_status_for).
+    #   HIGH — a deeply-nested JSON body (< the 256 KiB cap) makes json.loads
+    #     raise RecursionError (a RuntimeError, NOT a ValueError), which escaped
+    #     the narrow parse guard and crashed capture() on the first /health read.
+    # Proven here through the PERFCAPTURE (Lane 7) path; the delegate (Lane 4)
+    # path is proven in _delegation_checks.
+    # =====================================================================
+    import http.server as _hs
+    import threading as _thr
+
+    _NF_BODY = (b'{"eligible": true, "selected_model": "qwen3-30b-a3b", '
+                b'"estimated_quality": NaN, "estimated_tokens_per_second": Infinity, '
+                b'"estimated_queue_seconds": -Infinity, "arbitrary": -Infinity, '
+                b'"reason": {"provider_id": "wiki-llama", "placement_class": "local"}}')
+    _DEEP_BODY = b"[" * 60000 + b"]" * 60000  # ~117 KiB, well under the 256 KiB cap
+
+    def _serve(body_for):
+        """A tiny real HTTP server whose body is chosen per request path, so the
+        SHARED HttpTelemetryClient/HttpEstimateClient exercise the real _get_json/
+        _post_json parse path (not an in-process fake that bypasses it)."""
+        class _H(_hs.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+            def _send(self, path):
+                body = body_for(path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def do_GET(self):
+                self._send(self.path)
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self._send(self.path)
+        srv = _hs.HTTPServer(("127.0.0.1", 0), _H)
+        _thr.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv, srv.server_address[1]
+
+    # -- BLOCKER (ingress): a non-finite CC estimate body, healthy health/models ---
+    def _pc_body(path):
+        if path == "/health":
+            return b'{"status": "ok", "service": "computeconnect"}'
+        if path.startswith("/models"):
+            return (b'{"models": [{"id": "qwen3-30b-a3b", "runtime": "llama.cpp", '
+                    b'"loaded": true, "metadata": {"provider_id": "wiki-llama", '
+                    b'"placement_class": "local"}}]}')
+        return _NF_BODY  # /route/estimate
+    _pcsrv, _pcport = _serve(_pc_body)
+    _pc_base = f"http://127.0.0.1:{_pcport}"
+    try:
+        _pc_ec = dclients.HttpEstimateClient(_pc_base, path="/route/estimate")
+        _pc_est_raised = _raises(dclients.DelegationClientError, _pc_ec.estimate,
+                                 {"required_capabilities": ["code"]})
+        with Repo.open(start=proot) as r:
+            _pc_before = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+            res_nf = pcmod.capture(
+                r, telemetry_client=dclients.HttpTelemetryClient(_pc_base),
+                estimate_client=_pc_ec,
+                estimate_body={"required_capabilities": ["code"]}, observed_at="run-nf")
+            _pc_after = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+            _pc_list_ok = isinstance(pcmod.listing(r, status=None), list)
+            _pc_snap_ok = isinstance(regmod.snapshot(r), dict)
+            try:  # a json_extract sweep raises "malformed JSON" if any row is poisoned
+                r.q("SELECT json_extract(metadata,'$.kind') FROM memory_candidates")
+                _pc_sweep_ok = True
+            except Exception:  # noqa: BLE001
+                _pc_sweep_ok = False
+    finally:
+        _pcsrv.shutdown()
+    check("perfcapture FIX1(ingress): a /route/estimate body carrying "
+          "NaN/Infinity/-Infinity is REFUSED by the shared client (parse_constant) as "
+          "a DelegationClientError — untrusted engine treated unavailable",
+          _pc_est_raised)
+    check("perfcapture FIX1(ingress): capture() with a non-finite estimate reports CC "
+          "available, drops the poison estimate, persists NOTHING non-finite, does not "
+          "crash, and ALL read surfaces (listing + registry.snapshot + json_extract "
+          "sweep) stay healthy afterward",
+          res_nf.cc_available is True and _pc_after == _pc_before
+          and any(dclients.COMPUTECONNECT in e for e in res_nf.errors)
+          and _pc_list_ok and _pc_snap_ok and _pc_sweep_ok)
+
+    # -- BLOCKER (isfinite filter): an in-process CC returning non-finite metrics ---
+    class _NanEstimate:
+        def estimate(self, body, *, privacy_header=None):
+            return {"eligible": True, "selected_model": "qwen3-30b-a3b",
+                    "estimated_quality": float("nan"),
+                    "estimated_tokens_per_second": float("inf"),
+                    "estimated_queue_seconds": float("-inf"),
+                    "reason": {"provider_id": "wiki-llama", "placement_class": "local"}}
+    with Repo.open(start=proot) as r:
+        _nb = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+        res_nan = pcmod.capture(r, telemetry_client=FakeCC(), estimate_client=_NanEstimate(),
+                                estimate_body={"required_capabilities": ["code"]},
+                                observed_at="run-nanest")
+        _na = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+    check("perfcapture FIX1(isfinite filter): an in-process CC returning NaN/Infinity "
+          "estimate metrics yields ONLY the finite availability observation — the "
+          "non-finite metrics never become observations (math.isfinite), nothing "
+          "non-finite persisted, no crash",
+          res_nan.observed == 1 and res_nan.captured == [] and _na == _nb)
+
+    # -- BLOCKER (structural DB guard shared by both paths): create_checked refuses --
+    with Repo.open(start=proot) as r:
+        _gb = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+        _guard_raised = _raises(
+            candmod.CandidateError, candmod.create_checked, r,
+            "a telemetry fact with a poisoned metric value",
+            proposed_by="perfcapture", proposed_by_type="tool",
+            metadata={"kind": "perfcapture-observation", "value": float("inf")})
+        _ga = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+    check("perfcapture FIX1(DB guard): candidates.create_checked REFUSES a non-finite "
+          "metadata value with CandidateError (allow_nan=False) BEFORE any row or "
+          "inbox artifact is written — the structural poison-stop shared by BOTH the "
+          "perfcapture and delegate capture paths",
+          _guard_raised and _ga == _gb)
+
+    # -- HIGH (deeply-nested crash): RecursionError -> DelegationClientError ---------
+    _dsrv, _dport = _serve(lambda p: _DEEP_BODY)
+    _d_base = f"http://127.0.0.1:{_dport}"
+    try:
+        _d_tc = dclients.HttpTelemetryClient(_d_base)
+        _d_ec = dclients.HttpEstimateClient(_d_base, path="/route/estimate")
+        _d_health_raised = _raises(dclients.DelegationClientError, _d_tc.health)
+        _d_est_raised = _raises(dclients.DelegationClientError, _d_ec.estimate, {"x": 1})
+        with Repo.open(start=proot) as r:
+            _dcb = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+            res_deep = pcmod.capture(r, telemetry_client=_d_tc, observed_at="run-deep")
+            _dca = r.one("SELECT COUNT(*) n FROM memory_candidates")["n"]
+    finally:
+        _dsrv.shutdown()
+    check("perfcapture FIX2: a deeply-nested JSON body (RecursionError — a RuntimeError, "
+          "NOT a ValueError) on BOTH /health (GET) and /route/estimate (POST) is "
+          "converted to DelegationClientError by the shared client, never left to crash",
+          _d_health_raised and _d_est_raised)
+    check("perfcapture FIX2: capture() against a deeply-nested telemetry server is a "
+          "clean no-op (CC unavailable at /health) — captures nothing, never crashes",
+          res_deep.cc_available is False and res_deep.captured == [] and _dca == _dcb)
+
+    # -- a NORMAL capture still works and stays PENDING-only after the attacks -------
+    class _FreshCC(FakeCC):
+        def models(self, *, loaded_only=False):
+            return {"models": [{"id": "sane-model-after-attacks", "runtime": "llama.cpp",
+                     "loaded": True,
+                     "metadata": {"provider_id": "wiki-llama", "placement_class": "local"}}]}
+    with Repo.open(start=proot) as r:
+        res_ok = pcmod.capture(r, telemetry_client=_FreshCC(),
+                               estimate_client=FakeEstimate(),
+                               estimate_body={"required_capabilities": ["code"]},
+                               observed_at="run-after")
+        _ok_rows = [x for x in pcmod.listing(r, status=None)
+                    if x["model"] == "sane-model-after-attacks"]
+        _ok_claims = r.one("SELECT COUNT(*) n FROM claims")["n"]
+    check("perfcapture FIX1/FIX2: after every poison/crash attack, a NORMAL capture "
+          "still files a clean PENDING candidate and auto-promotes NOTHING (the ledger "
+          "is intact and the human gate is untouched)",
+          len(res_ok.captured) >= 1 and _ok_rows
+          and all(x["status"] == "pending" and x["trusted"] is False for x in _ok_rows)
+          and _ok_claims == 0)
 
     # -- the CLI read + capture surfaces exist and honour --json ----------------
     from brainconnect import cli as _cli

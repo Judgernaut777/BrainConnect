@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 
 from .db import Repo
@@ -179,6 +180,12 @@ def _estimate_observations(estimate: object) -> list[PerfObservation]:
             val = reason.get(metric)
         if not isinstance(val, (int, float)) or isinstance(val, bool):
             continue
+        # Untrusted CC telemetry: a non-finite metric (NaN/Infinity/-Infinity) is
+        # never a real measurement. Skip it before it can become an observation — a
+        # third layer of poison defense behind the delegate-clients ingress reject
+        # and the structural DB guard (candidates.create_checked, allow_nan=False).
+        if not math.isfinite(val):
+            continue
         out.append(PerfObservation(
             subject=model.strip(), subject_kind="model", metric=metric,
             value=val, kind=KIND_ESTIMATE,
@@ -286,7 +293,18 @@ def _already_filed(repo: Repo, fingerprint: str) -> bool:
 
     Resolution is by the unforgeable perfcapture marker matched exactly via
     `json_extract` — never by a public tag — so a squatter can neither impersonate a
-    captured fact nor suppress a new one by pre-filing its fingerprint."""
+    captured fact nor suppress a new one by pre-filing its fingerprint.
+
+    NOTE (deliberate, documented): this SELECT-then-INSERT dedup is technically a
+    TOCTOU. A structural partial-UNIQUE index on
+    `json_extract(metadata,'$.perfcapture_observation')` would reject a duplicate at
+    the DB layer, but that touches the shared `memory_candidates` schema/migration
+    path and risks breaking every other candidate write, so it is intentionally NOT
+    added here. The window is harmless in practice: BrainConnect is a single-user,
+    human-gated CLI, a capture run is not executed concurrently with itself, and a
+    duplicate PENDING candidate is at worst a redundant row a human ignores or
+    archives — never a trust or correctness defect. If capture ever becomes
+    concurrent, add the partial index in a dedicated migration."""
     row = repo.one(
         "SELECT 1 AS x FROM memory_candidates "
         "WHERE json_extract(metadata, ?) = ? LIMIT 1",
@@ -300,6 +318,16 @@ def _capture_one(repo: Repo, o: PerfObservation, *, observed_at: str | None,
     fp = o.fingerprint()
     if _already_filed(repo, fp):
         result.duplicates += 1
+        return
+
+    # Defense in depth (records the skip an upstream filter cannot). A non-finite
+    # value (NaN/Infinity) is not a real observation and would be refused by the
+    # structural DB guard anyway; skip it here with an audit-safe reason so the run
+    # stays clean, explicit, and never attempts to persist ledger-poisoning JSON.
+    if isinstance(o.value, float) and not math.isfinite(o.value):
+        result.skipped.append({
+            "metric": o.metric, "kind": o.kind, "fingerprint": fp,
+            "reason": "non-finite value (NaN/Infinity); not captured"})
         return
 
     # The model id becomes the claim SCOPE (`model:<id>`), and scope_id is NOT

@@ -129,6 +129,21 @@ class TelemetryClient(Protocol):
 
 
 # --- HTTP implementations ----------------------------------------------------
+def _reject_nonfinite(token: str):
+    """`json.loads(..., parse_constant=...)` hook that REFUSES a non-standard JSON
+    constant. Python's `json` ACCEPTS the non-standard tokens ``NaN``, ``Infinity``
+    and ``-Infinity`` by default; a later ``json.dumps`` then writes them back as a
+    BARE ``NaN``/``Infinity`` token — which is INVALID JSON. The instant such a
+    value reaches SQLite (a candidate's ``metadata``), ``json_extract`` raises
+    "malformed JSON" on that row for EVERY subsequent read, permanently poisoning
+    the ledger (perfcapture listing/dedup, the registry snapshot / :8787 trusted
+    view). Since an engine response is UNTRUSTED data, we reject a non-finite
+    constant at ingress: raising here fails the parse, and the caller converts it to
+    the single `DelegationClientError` outage class (the engine is treated
+    unavailable and the trigger falls back cleanly)."""
+    raise ValueError(f"non-finite JSON constant {token!r} refused")
+
+
 def _read_bounded(resp, *, provider: str, safe_url: str, max_bytes: int,
                   start: float, deadline: float) -> bytes:
     """Read a response body under BOTH a byte cap and a wall-clock deadline.
@@ -190,9 +205,15 @@ def _post_json(url: str, payload: dict, *, provider: str, token: str | None,
             provider, f"unreachable {safe_url}: {type(e).__name__}") from e
     raw = raw_bytes.decode("utf-8", "ignore")
     try:
-        obj = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as e:
-        raise DelegationClientError(provider, f"non-JSON body from {safe_url}") from e
+        obj = json.loads(raw, parse_constant=_reject_nonfinite)
+    except (json.JSONDecodeError, ValueError, RecursionError) as e:
+        # ONE failure class for any decode problem. ValueError covers a malformed
+        # body AND a non-finite constant (rejected by `_reject_nonfinite`, above).
+        # RecursionError covers a deeply-nested body (< the byte cap) whose parse
+        # blows the C-scanner stack — it subclasses RuntimeError, NOT ValueError, so
+        # without naming it here it would ESCAPE this guard and crash the caller on
+        # the first read. Both collapse to the outage class the trigger falls back on.
+        raise DelegationClientError(provider, f"unparseable body from {safe_url}") from e
     if not isinstance(obj, dict):
         raise DelegationClientError(provider, f"non-object body from {safe_url}")
     return obj
@@ -229,9 +250,15 @@ def _get_json(url: str, *, provider: str, token: str | None, timeout: float,
             provider, f"unreachable {safe_url}: {type(e).__name__}") from e
     raw = raw_bytes.decode("utf-8", "ignore")
     try:
-        obj = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as e:
-        raise DelegationClientError(provider, f"non-JSON body from {safe_url}") from e
+        obj = json.loads(raw, parse_constant=_reject_nonfinite)
+    except (json.JSONDecodeError, ValueError, RecursionError) as e:
+        # ONE failure class for any decode problem. ValueError covers a malformed
+        # body AND a non-finite constant (rejected by `_reject_nonfinite`, above).
+        # RecursionError covers a deeply-nested body (< the byte cap) whose parse
+        # blows the C-scanner stack — it subclasses RuntimeError, NOT ValueError, so
+        # without naming it here it would ESCAPE this guard and crash the caller on
+        # the first read. Both collapse to the outage class the trigger falls back on.
+        raise DelegationClientError(provider, f"unparseable body from {safe_url}") from e
     if not isinstance(obj, dict):
         raise DelegationClientError(provider, f"non-object body from {safe_url}")
     return obj
