@@ -61,6 +61,24 @@ it honors its own `trusted` bit:
 - **Hostile data is bounded.** Malformed items are normalized defensively — bounded
   text (`MAX_TEXT`), boolean-strict eligibility, capped links/provenance, at most
   `MAX_SCAN` items scanned — and a bad item is skipped, never raised.
+- **Bounded pack.** The pack never exceeds `max_items`. Native items fill the pack
+  first (up to `max_items`); federation is budgeted against the *remaining* slots
+  (`max(0, max_items - len(native))`) and the merged pack is truncated to
+  `max_items` as a belt-and-braces guard. Federated material can only occupy
+  leftover budget — it never inflates the pack to `2 × max_items`.
+- **Respects the caller's scope.** A federated item carries a synthetic FOREIGN
+  scope, `external:decima` (`federation.EXTERNAL_SCOPE_TYPE` / `scopes` vocabulary
+  member `external`). A **scoped** recall (non-empty `req.scopes`) surfaces foreign
+  federated knowledge **only when it explicitly requests `external:decima`** —
+  otherwise federation is omitted entirely, so out-of-scope external knowledge
+  cannot leak past a scoped query (fail-closed to the caller's scope intent). An
+  **unscoped** recall (`req.scopes` empty) federates as before — foreign knowledge
+  augments an unscoped read the way `global` claims do.
+- **NOTE honesty.** The pack NOTE's "each is promoted (vetted) unless `trusted`
+  says otherwise" describes BC **claims**. When a pack contains any
+  `status: "federated"` item, an added warning clarifies that a trusted federated
+  item is vetted by the federating **source** (Decima), **not** promoted through the
+  BC ledger — the NOTE does not overclaim BC vetting of foreign knowledge.
 - **Deterministic.** Matching is pure query-token overlap; ordering is
   `(-score, decima_id)`; native items come first, then federated. Two identical
   reads produce an identical pack.
@@ -86,7 +104,11 @@ instruction_eligible / trust / links / provenance`). Tests use
 `build_source_from_env()` guards the import of `decima.read_contract`, refuses an
 incompatible `READ_CONTRACT_VERSION` major, opens the Weft read-only via
 `open_read_models(weft)`, and returns a `RealDecimaKnowledgeSource` — or `None` on
-any failure. BC is a **read-only consumer**: it appends nothing to Decima and never
+any failure. `default_backend()` (used when `recall` is called without an explicit
+`federation` arg) **memoizes** the env-built backend keyed on
+(`DECIMA_SRC`, `DECIMA_WEFT`, `DECIMA_KEYRING`), so the Weft is opened once per
+process per config rather than reopened (and leaked) on every recall; a config
+change re-resolves, and `reset_default_backend_cache()` clears the memo. BC is a **read-only consumer**: it appends nothing to Decima and never
 touches Decima's execution/authorization internals (Lane-2 boundary).
 
 ## Conformance pin

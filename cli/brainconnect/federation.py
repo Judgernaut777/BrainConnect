@@ -68,6 +68,12 @@ _log = logging.getLogger("brainconnect.federation")
 #: Stable federation source label (provenance / synthetic scope / warnings).
 DECIMA = "decima"
 
+#: The synthetic scope TYPE a federated item carries (``external:decima``). It is a
+#: FOREIGN scope — deliberately NOT one of BC's ledger ``scopes.SCOPE_TYPES`` — so a
+#: caller must ask for it explicitly to admit foreign knowledge into a scoped recall
+#: (see ``recall._external_scope_requested``). Fail-closed to the caller's scope.
+EXTERNAL_SCOPE_TYPE = "external"
+
 #: The Decima read-contract version BC is written against. The conformance pin
 #: (tests) asserts this equals Decima's real ``READ_CONTRACT_VERSION`` when Decima
 #: is importable, so a contract bump cannot drift silently.
@@ -205,7 +211,14 @@ def normalize(item: Any) -> Optional[FederatedItem]:
         raw_text = _get(item, "text")
         text = raw_text[:MAX_TEXT] if isinstance(raw_text, str) else _scalar(raw_text, bound=MAX_TEXT)
         eligible = _get(item, "instruction_eligible") is True
-        trust = _scalar(_get(item, "trust")) or ("trusted" if eligible else "untrusted")
+        # Derive trust from eligibility only when the item OMITS a trust label.
+        # `_scalar(None)` returns the truthy string "None", so a bare `or` fallback
+        # would never fire (dead branch) and a trust-omitted item could never derive
+        # its trust — guard on presence explicitly. Still fail-closed: the derived
+        # label is "trusted" only when the eligibility bit is a real ``True``.
+        raw_trust = _get(item, "trust")
+        trust = _scalar(raw_trust) if raw_trust is not None \
+            else ("trusted" if eligible else "untrusted")
         # Fail-closed: trusted iff the boolean is true AND the derived label agrees.
         trusted = eligible and trust == "trusted"
         return FederatedItem(
@@ -340,7 +353,7 @@ class DecimaKnowledgeBackend:
                 text=item.text,
                 status=FEDERATED_STATUS,
                 confidence=FEDERATED_CONFIDENCE,
-                scope={"type": "external", "id": DECIMA},
+                scope={"type": EXTERNAL_SCOPE_TYPE, "id": DECIMA},
                 validity="current",
                 trusted=item.instruction_eligible,  # normalize() made this fail-closed
                 tags=[f"federated:{DECIMA}"] + ([f"type:{item.type}"] if item.type else []),
@@ -457,20 +470,44 @@ def _version_compatible(version: Any) -> bool:
         return False
 
 
+#: env vars that fully determine the env-built federation source. The default
+#: backend is memoized on their values so the Decima Weft is opened ONCE per
+#: process per config — not reopened on every omitted-``federation`` recall (which
+#: would leak Weft handles). A config change (any of these vars) re-resolves.
+_ENV_KEYS = ("DECIMA_SRC", "DECIMA_WEFT", "DECIMA_KEYRING")
+_backend_cache: dict[tuple, Optional["DecimaKnowledgeBackend"]] = {}
+
+
+def _env_key(env: dict) -> tuple:
+    return tuple((env.get(k) or "").strip() for k in _ENV_KEYS)
+
+
+def reset_default_backend_cache() -> None:
+    """Drop the memoized env-built backend (test/reload hook). Non-fatal."""
+    _backend_cache.clear()
+
+
 def default_backend(env: Optional[dict] = None) -> Optional[DecimaKnowledgeBackend]:
     """The env-configured federation backend, or ``None`` when federation is off.
 
-    Never raises: any failure resolving a source disables federation. Returns a
-    fresh backend each call (cheap; the source holds any state)."""
+    Never raises: any failure resolving a source disables federation. MEMOIZED on
+    the federation env config (:data:`_ENV_KEYS`) so the Decima Weft is opened once
+    per process per config — recall with the ``federation`` arg omitted no longer
+    reopens the Weft (nor leaks its handle) on every call. A config change
+    re-resolves; :func:`reset_default_backend_cache` clears the memo."""
+    env = os.environ if env is None else env
+    key = _env_key(env)
+    if key in _backend_cache:
+        return _backend_cache[key]
     try:
         source = build_source_from_env(env)
     except Exception as e:  # noqa: BLE001 — belt-and-suspenders non-fatal boundary.
         _log.warning("federation: source resolution failed; disabled (%s)",
                      type(e).__name__)
-        return None
-    if source is None:
-        return None
-    return DecimaKnowledgeBackend(source)
+        source = None
+    backend = DecimaKnowledgeBackend(source) if source is not None else None
+    _backend_cache[key] = backend
+    return backend
 
 
 # Re-exported for type hints in docstrings without a hard import cycle.

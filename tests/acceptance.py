@@ -6551,9 +6551,20 @@ def _federation_checks():
               order1 == order2 and len(order1) == 6)
 
         # (4) NON-FATAL: absent source (default backend, no env) and an erroring
-        # source both no-op; native BC recall is unaffected.
-        pack_absent = recallmod.recall(
-            r, recallmod.RecallRequest(query="refresh token"))  # no federation arg
+        # source both no-op; native BC recall is unaffected. Hermetic: clear the
+        # DECIMA_* env so the result does not depend on the host's environment, and
+        # drop the env-backend memo so a stale cached source cannot bleed in.
+        _saved_env = {k: os.environ.pop(k, None)
+                      for k in ("DECIMA_SRC", "DECIMA_WEFT", "DECIMA_KEYRING")}
+        fed.reset_default_backend_cache()
+        try:
+            pack_absent = recallmod.recall(
+                r, recallmod.RecallRequest(query="refresh token"))  # no federation arg
+        finally:
+            for _k, _v in _saved_env.items():
+                if _v is not None:
+                    os.environ[_k] = _v
+            fed.reset_default_backend_cache()
         check("federation: with NO Decima source configured (default), recall runs "
               "normally and federates nothing (optional; never a required dependency)",
               all(not i.id.startswith("decima:") for i in pack_absent.items))
@@ -6588,6 +6599,113 @@ def _federation_checks():
               "is untrusted input; no poison reaches the caller)",
               all(i.id != "decima:evil" for i in pack_inj.items)
               and any("WITHHELD" in w for w in pack_inj.warnings))
+
+        # ---- FIX 1: BOUND THE PACK — federation fills only leftover budget ------
+        from brainconnect.scopes import Scope as _Scope
+        # A corpus with plenty of matches; if federation ignored the remaining
+        # budget it would append up to max_items MORE (a 2x-max_items pack).
+        bigcorpus = [{"id": f"b{n}", "type": "note",
+                      "text": "refresh token expiry rotation design",
+                      "instruction_eligible": True, "trust": "trusted"}
+                     for n in range(12)]
+        bbig = fed.DecimaKnowledgeBackend(fed.StubDecimaKnowledgeSource(bigcorpus))
+        # Seed exactly max_items native promoted claims that match the query.
+        _cap = 4
+        for _n in range(_cap):
+            _c, _ = candmod.create_checked(
+                r, f"refresh token expiry rule number {_n}",
+                proposed_by="tester", proposed_by_type="agent")
+            candmod.promote(r, _c, reviewer="matthew", confidence="high",
+                            scope=_Scope("global"))
+        pack_cap = recallmod.recall(
+            r, recallmod.RecallRequest(query="refresh token expiry",
+                                       max_items=_cap), federation=bbig)
+        n_fed_cap = sum(1 for i in pack_cap.items if i.id.startswith("decima:"))
+        check("federation FIX1: native fills max_items, so federation adds NOTHING "
+              "and the pack length == max_items (never exceeds; bound the pack)",
+              len(pack_cap.items) == _cap and n_fed_cap == 0)
+        # And when native only PARTIALLY fills, federation takes only the leftover
+        # slots — the merged pack still never exceeds max_items.
+        pack_part = recallmod.recall(
+            r, recallmod.RecallRequest(query="refresh token expiry",
+                                       max_items=_cap + 3), federation=bbig)
+        n_fed_part = sum(1 for i in pack_part.items if i.id.startswith("decima:"))
+        check("federation FIX1: with leftover budget, federated items fill ONLY the "
+              "remaining slots and the pack still never exceeds max_items",
+              len(pack_part.items) == _cap + 3 and n_fed_part == 3)
+
+        # ---- FIX 2: RESPECT CALLER SCOPES — no external leak into a scoped read --
+        pack_scoped = recallmod.recall(
+            r, recallmod.RecallRequest(query="refresh token",
+                                       scopes=[_Scope("repo", "some-app")]),
+            federation=backend)
+        check("federation FIX2: a SCOPED recall that does not request the external "
+              "scope surfaces NO federated items (out-of-scope foreign knowledge "
+              "does not leak past the caller's scope)",
+              all(not i.id.startswith("decima:") for i in pack_scoped.items))
+        pack_ext = recallmod.recall(
+            r, recallmod.RecallRequest(
+                query="refresh token",
+                scopes=[_Scope(fed.EXTERNAL_SCOPE_TYPE, fed.DECIMA)]),
+            federation=backend)
+        check("federation FIX2: a scoped recall that EXPLICITLY requests "
+              "external:decima DOES surface federated items (opt-in foreign scope)",
+              any(i.id == "decima:k-trusted" for i in pack_ext.items))
+
+        # ---- FIX 4: NOTE HONESTY — trusted-federated is vetted by Decima, not BC -
+        pack_note = recallmod.recall(
+            r, recallmod.RecallRequest(query="refresh token"), federation=backend)
+        check("federation FIX4: a pack with a federated item warns that a trusted "
+              "federated item is vetted by the SOURCE (Decima), NOT promoted through "
+              "the BC ledger (the NOTE does not overclaim BC vetting)",
+              any("vetted by the federated SOURCE" in w for w in pack_note.warnings))
+
+    # ---- FIX 3: normalize() derives trust when the item OMITS a trust label -----
+    _no_trust_elig = fed.normalize({"id": "nt1", "type": "note",
+                                    "text": "refresh token",
+                                    "instruction_eligible": True})  # no "trust" key
+    check("federation FIX3: a trust-OMITTED item with instruction_eligible=True "
+          "DERIVES trust='trusted' (the dead `_scalar(None)=='None'` branch is fixed)",
+          _no_trust_elig is not None and _no_trust_elig.trust == "trusted"
+          and _no_trust_elig.instruction_eligible is True)
+    _no_trust_inelig = fed.normalize({"id": "nt2", "type": "note",
+                                      "text": "refresh token",
+                                      "instruction_eligible": False})
+    check("federation FIX3: a trust-omitted item with instruction_eligible=False "
+          "fails CLOSED to untrusted DATA",
+          _no_trust_inelig is not None and _no_trust_inelig.trust == "untrusted"
+          and _no_trust_inelig.instruction_eligible is False)
+    _no_trust_hostile = fed.normalize({"id": "nt3", "type": "note",
+                                       "text": "refresh token",
+                                       "instruction_eligible": "yes"})
+    check("federation FIX3: a trust-omitted item with a HOSTILE truthy eligibility "
+          "still fails closed (only a real bool True derives trusted)",
+          _no_trust_hostile is not None
+          and _no_trust_hostile.instruction_eligible is False)
+
+    # ---- FIX 5: default_backend memoizes the env-built source (open Weft once) ---
+    fed.reset_default_backend_cache()
+    _orig_build = fed.build_source_from_env
+    _build_calls = {"n": 0}
+
+    def _counting_build(env=None):
+        _build_calls["n"] += 1
+        return fed.StubDecimaKnowledgeSource([])
+    try:
+        fed.build_source_from_env = _counting_build
+        _env_a = {"DECIMA_SRC": "/decima", "DECIMA_WEFT": "/weft"}
+        _b1 = fed.default_backend(_env_a)
+        _b2 = fed.default_backend(_env_a)
+        check("federation FIX5: default_backend MEMOIZES the env-built source — the "
+              "Decima Weft is opened once per config, not reopened on every recall",
+              _build_calls["n"] == 1 and _b1 is _b2 and _b1 is not None)
+        fed.default_backend({"DECIMA_SRC": "/other", "DECIMA_WEFT": "/weft"})
+        check("federation FIX5: a CHANGED federation env config re-resolves the "
+              "source (memo keyed on DECIMA_SRC/WEFT/KEYRING)",
+              _build_calls["n"] == 2)
+    finally:
+        fed.build_source_from_env = _orig_build
+        fed.reset_default_backend_cache()
 
     # (8) CONFORMANCE PIN — BC's contract expectations match Decima's when present.
     _decima_src = os.environ.get("DECIMA_SRC", "/home/mini/decima-claude")

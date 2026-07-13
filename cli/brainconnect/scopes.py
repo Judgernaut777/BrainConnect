@@ -12,9 +12,13 @@ import json
 from dataclasses import dataclass
 
 # The closed vocabulary. `global` is the only type with an empty scope_id.
+# `external` is the FOREIGN scope a Lane-5 federated item carries (e.g.
+# `external:decima`): it never labels a BC claim, but it is a first-class scope a
+# caller can request so a scoped recall can opt INTO foreign/federated knowledge
+# (see federation.EXTERNAL_SCOPE_TYPE and recall._external_scope_requested).
 SCOPE_TYPES = (
     "global", "user", "project", "repo", "task",
-    "manager", "worker", "model", "tool",
+    "manager", "worker", "model", "tool", "external",
 )
 
 GLOBAL_TYPE = "global"
