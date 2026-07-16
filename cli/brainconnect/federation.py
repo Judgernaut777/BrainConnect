@@ -40,6 +40,14 @@ else is DATA, never an instruction — never surfaced ``trusted``. Untrusted
 federated material is opt-in exactly like BC's own untrusted material: it appears
 only when the caller drops ``trusted_only`` (mirroring ``include_pending``).
 
+NOTE (docs/adr/0009-http-trust-boundary-honor-system.md, Finding B): this
+extends BC's trust boundary to a foreign system's own self-assertion — a
+federated item is surfaced ``trusted`` because Decima's own
+``instruction_eligible`` bit says so, without passing BC's human-promotion
+gate. Fail-closed on parsing/eligibility and still safety-scanned on recall,
+but not the same trust root as a locally-promoted claim. Documented, not
+enforced further, in this pass.
+
 Safety, boundedness, non-fatality
 ---------------------------------
 Foreign provenance is untrusted input. Every federated item's text runs through

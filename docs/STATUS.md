@@ -39,7 +39,7 @@ AgentConnect's dogfood; the contract has since been extended, additively, by saf
 | | |
 |---|---|
 | Schema version | **9** (`schema.SCHEMA_VERSION == migrate.latest_version()`); unchanged by safety |
-| Gate | **581 checks pass, 0 failures** |
+| Gate | **951 checks pass, 0 failures** |
 | Retrieval backend | `sqlite_fts` (the only one implemented) |
 | Transport | in-process Python API + MCP stdio + **`brainconnect serve` HTTP (default 127.0.0.1:8787)** |
 | Content safety | enforced at `memory_candidate`, `memory_recall`, `memory_promotion` |
@@ -227,6 +227,15 @@ governance-only. It is honest: it does **not** claim complete round-trip fidelit
 trust, promotion status, audit history, and contradiction/supersession bookkeeping
 are governance-only and ledger-owned, re-established only by human promotion
 ([adr/0007](adr/0007-okf-roundtrip.md)). Demos: `scripts/okf_{validate,import,roundtrip}_demo.py`.
+
+## Known trust-boundary caveats
+
+Two places where "promotion is human-only" / "only BrainConnect confers trust"
+are weaker than intended once a caller crosses an HTTP or federation boundary
+— documented, not yet enforced further: **[adr/0009](adr/0009-http-trust-boundary-honor-system.md)**
+(HTTP `_promote` trusts a caller-declared `reviewer_type`; Decima federation
+surfaces a foreign `instruction_eligible` bit as `trusted`, bypassing
+`trust.is_trusted`).
 
 ## Deferred work
 

@@ -32,6 +32,10 @@ Everything of consequence is a property of the API layer, not of this file:
   override: a payload carrying ``safety_override`` or ``override_reason`` is
   refused with ``forbidden``, and there is no other field that reaches the
   override. Overriding happens at the CLI, by a human, with a reason.
+  NOTE: ``reviewer_type`` itself IS still a caller-supplied payload field
+  here (see ``_promote`` / ``_PROMOTE_FIELDS`` below) — a bearer-token
+  holder can declare ``"human"`` without being one. Documented, not yet
+  closed: see docs/adr/0009-http-trust-boundary-honor-system.md (Finding A).
 * **Optional bearer-token auth.** When a token is configured (``--token`` or
   ``BRAINCONNECT_TOKEN``), every route except ``GET /health`` requires an
   ``Authorization`` header carrying it (``Bearer <token>`` or the bare token,
@@ -115,6 +119,12 @@ def _capture(repo: Repo, payload: dict) -> dict:
 
 
 def _promote(repo: Repo, candidate_id: str, payload: dict) -> dict:
+    # NOTE (docs/adr/0009-http-trust-boundary-honor-system.md, Finding A):
+    # `reviewer_type` below is taken from the caller's payload and passed
+    # straight to `candidates.promote`. Its `ReviewerNotPermitted` check is
+    # structural on the CLI/Python path (actor type set by trusted local
+    # context) but NOT over HTTP, where any bearer-token holder can declare
+    # `"human"`. Documented, not enforced further, in this pass.
     payload = _drop_nones(payload)
     # The override is human-only and CLI-only (docs/CONTRACT.md). Refusing it as
     # `forbidden` — not `invalid_request` — is deliberate: an agent told
