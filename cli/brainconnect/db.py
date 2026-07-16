@@ -6,13 +6,38 @@ mutating command must run (BUILD_SPEC.md §2, §3.2).
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
 from .config import Config
 from .schema import ALL_DDL, SCHEMA_VERSION
-from .migrate import migrate
+from .migrate import migrate as _migrate_fn
+from .migrate import schema_status
 from . import util
+
+#: Server opt-in to auto-migrate a behind-schema database at startup instead of
+#: refusing to start. See `auto_migrate_enabled` / `open_for_server`.
+AUTO_MIGRATE_ENV_VAR = "BRAINCONNECT_AUTO_MIGRATE"
+
+
+class SchemaBehindError(RuntimeError):
+    """Raised by `open_for_server` when the on-disk schema is behind
+    `SCHEMA_VERSION` and auto-migration was not opted into. The fix for the
+    2026-07-10 incident (docs/MIGRATIONS.md): a server used to silently
+    migrate whatever DB it resolved to, on every launch. Now it checks and
+    refuses by default; the operator runs `brainconnect migrate` (or opts in
+    via `--auto-migrate` / `BRAINCONNECT_AUTO_MIGRATE`)."""
+
+
+def auto_migrate_enabled(explicit: bool | None = None) -> bool:
+    """Resolve the server auto-migrate opt-in. An explicit `True`/`False` (a
+    `--auto-migrate` CLI flag) always wins; otherwise read
+    `BRAINCONNECT_AUTO_MIGRATE` (1/true/yes/on -> enabled)."""
+    if explicit is not None:
+        return explicit
+    return os.environ.get(AUTO_MIGRATE_ENV_VAR, "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 class Repo:
@@ -35,14 +60,23 @@ class Repo:
     # --- lifecycle -----------------------------------------------------------
     @classmethod
     def open(cls, start: Path | None = None, *, must_exist: bool = True,
-             write_projections: bool = True) -> "Repo":
-        """Open the repo's database, applying any pending forward migrations.
+             write_projections: bool = True, migrate: bool = True) -> "Repo":
+        """Open the repo's database, by default applying any pending forward
+        migrations.
 
-        **This mutates real state.** Migrations run on EVERY open — including the
-        one `mcp_server.build_server()` performs. `start` selects which
-        `config.toml` is read; the database lives at an absolute path *inside* that
-        config (`[paths] db`, default `~/.wiki-brain/wiki.db`), so passing a temp
-        `start` is NOT isolation and will still migrate the user's live DB.
+        **`migrate=True` (the default) mutates real state.** Migrations run on
+        every such open — the CLI and library default, unchanged from before.
+        `start` selects which `config.toml` is read; the database lives at an
+        absolute path *inside* that config (`[paths] db`, default
+        `~/.wiki-brain/wiki.db`), so passing a temp `start` is NOT isolation and
+        will still migrate the user's live DB.
+
+        Pass `migrate=False` to open without applying any DDL — the caller gets
+        the DB exactly as it is on disk (use `Repo.schema_status()` to check it
+        afterwards). This is what server startup uses (see `open_for_server`);
+        it is also correct for any read that must not have a mutation side
+        effect. It does NOT create the database file's schema — a fresh/missing
+        DB still needs `init_db` first.
 
         For tests, scripts and MCP verification, set `BRAINCONNECT_DB` to a scratch
         path. See docs/MIGRATIONS.md.
@@ -66,10 +100,17 @@ class Repo:
         # The librarian runs as a separate process against the same WAL DB;
         # wait for a writer instead of failing fast with "database is locked".
         conn.execute("PRAGMA busy_timeout=10000;")
-        # Carry an existing DB forward if SCHEMA_VERSION has bumped since it was
-        # created. No-op (a single PRAGMA read) once the DB is current.
-        migrate(conn)
+        if migrate:
+            # Carry an existing DB forward if SCHEMA_VERSION has bumped since it
+            # was created. No-op (a single PRAGMA read) once the DB is current;
+            # see migrate.migrate() for the concurrent-first-open lock.
+            _migrate_fn(conn)
         return cls(cfg, conn, write_projections=write_projections)
+
+    def schema_status(self) -> dict:
+        """Read-only: `{"current", "latest", "behind"}` for this repo's open
+        connection. Never mutates — safe after `Repo.open(migrate=False)`."""
+        return schema_status(self.conn)
 
     def close(self):
         self.conn.close()
@@ -161,3 +202,39 @@ def init_db(start: Path | None = None) -> Repo:
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.commit()
     return Repo(cfg, conn)
+
+
+def open_for_server(start: Path | None = None, *, write_projections: bool = True,
+                    auto_migrate: bool | None = None) -> Repo:
+    """The server-startup open: never silently migrates.
+
+    Opens with `migrate=False`, then checks the on-disk schema against
+    `SCHEMA_VERSION`. A current schema opens normally. A behind schema either:
+
+      * raises `SchemaBehindError` (the default) — the operator runs
+        `brainconnect migrate` — or
+      * is migrated in place, if the caller opted in (`auto_migrate=True`, a
+        `--auto-migrate` flag) or the `BRAINCONNECT_AUTO_MIGRATE` environment
+        variable is set.
+
+    Callers that use this for startup should open every subsequent (e.g.
+    per-request) `Repo` with `migrate=False` too: this check already ran, so
+    later opens should not pay for — or risk — another migration pass.
+    """
+    repo = Repo.open(start, write_projections=write_projections, migrate=False)
+    status = repo.schema_status()
+    if status["behind"]:
+        if auto_migrate_enabled(auto_migrate):
+            _migrate_fn(repo.conn)
+        else:
+            current, latest = status["current"], status["latest"]
+            repo.close()
+            raise SchemaBehindError(
+                f"database schema is v{current}, code expects v{latest}. "
+                "Refusing to auto-migrate a server database on startup "
+                "(docs/MIGRATIONS.md). Run `brainconnect migrate` to upgrade "
+                f"it first, or opt in with --auto-migrate / "
+                f"{AUTO_MIGRATE_ENV_VAR}=1 if you understand the risk of a "
+                "concurrent server doing the same."
+            )
+    return repo

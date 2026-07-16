@@ -53,8 +53,16 @@ Everything of consequence is a property of the API layer, not of this file:
   framework enters the trust boundary.
 
 The live database rule applies with full force here: the served DB is whatever
-the resolved config (or ``BRAINCONNECT_DB``) points at, and ``Repo.open``
-migrates it. Point a test server at a scratch DB, never at the live one.
+the resolved config (or ``BRAINCONNECT_DB``) points at. Point a test server at
+a scratch DB, never at the live one.
+
+**Startup does not silently migrate.** ``build_server`` opens with
+``db.open_for_server`` (docs/MIGRATIONS.md): a behind-schema DB refuses to
+start with a clear ``SchemaBehindError`` telling the operator to run
+``brainconnect migrate``, unless ``auto_migrate=True`` (``--auto-migrate`` /
+``BRAINCONNECT_AUTO_MIGRATE=1``) was opted into. Every per-request ``Repo.open``
+thereafter passes ``migrate=False`` — the startup check already ran, and a
+request handler must never trigger a migration.
 """
 from __future__ import annotations
 
@@ -65,7 +73,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from . import api, candidates, errors, registry
-from .db import Repo
+from .db import Repo, open_for_server
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
@@ -261,8 +269,10 @@ class _Handler(BaseHTTPRequestHandler):
         """Auth, execute, map every refusal to the canonical envelope."""
         try:
             self._require_authorized()
+            # migrate=False: the startup check in build_server already confirmed
+            # (or brought current) the schema; a request must never migrate it.
             with Repo.open(self.server.repo_root,
-                           write_projections=False) as repo:
+                           write_projections=False, migrate=False) as repo:
                 result = handler(repo)
             self._send(200, result)
         except Exception as exc:  # noqa: BLE001 — every failure must wear the envelope
@@ -310,8 +320,10 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/health":
             # Liveness stays reachable without a credential: a probe that cannot
             # ask "are you degraded?" invents the answer from refusals instead.
+            # migrate=False for the same reason as `_dispatch`: a health probe
+            # must never be the thing that triggers a schema migration.
             try:
-                with Repo.open(self.server.repo_root) as repo:
+                with Repo.open(self.server.repo_root, migrate=False) as repo:
                     self._send(200, api.health(repo))
             except Exception as exc:  # noqa: BLE001
                 self._refuse(exc)
@@ -357,19 +369,26 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def build_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *,
-                 token: str | None = None, root=None) -> BrainConnectServer:
+                 token: str | None = None, root=None,
+                 auto_migrate: bool | None = None) -> BrainConnectServer:
     """Bind and return the server without blocking (port 0 = ephemeral, for
     tests). Resolves the repo root once at launch, exactly like the MCP server,
-    so requests are immune to the client's cwd."""
-    with Repo.open(root) as probe:
+    so requests are immune to the client's cwd.
+
+    Opens via `db.open_for_server`: a behind-schema DB refuses to start
+    (`SchemaBehindError`) unless `auto_migrate=True` or
+    `BRAINCONNECT_AUTO_MIGRATE=1` is set — see the module docstring.
+    """
+    with open_for_server(root, auto_migrate=auto_migrate) as probe:
         resolved_root = probe.root
     return BrainConnectServer((host, port), resolved_root, token)
 
 
 def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *,
-          token: str | None = None, root=None) -> None:
+          token: str | None = None, root=None,
+          auto_migrate: bool | None = None) -> None:
     """Run the HTTP server until interrupted."""
-    httpd = build_server(host, port, token=token, root=root)
+    httpd = build_server(host, port, token=token, root=root, auto_migrate=auto_migrate)
     bound = httpd.server_address
     mode = "token-required" if httpd.token else "open (no token configured)"
     print(f"brainconnect serve: listening on http://{bound[0]}:{bound[1]} [{mode}]")

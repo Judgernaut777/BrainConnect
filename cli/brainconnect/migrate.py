@@ -152,21 +152,72 @@ def latest_version() -> int:
     return max(MIGRATIONS) if MIGRATIONS else 1
 
 
+def schema_status(conn: sqlite3.Connection) -> dict:
+    """Read-only: current `user_version` vs `latest_version()`. Never mutates —
+    safe to call from a `--check` path or a server startup probe."""
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    latest = latest_version()
+    return {"current": current, "latest": latest, "behind": current < latest}
+
+
+def _apply(conn: sqlite3.Connection, stmt: str) -> None:
+    """Execute one migration statement, tolerating "already applied" errors.
+
+    The primary defense against two processes racing to migrate the same
+    behind-schema DB is the `BEGIN IMMEDIATE` lock in `migrate()` below — it
+    serializes the whole sequence, so under normal operation (any caller that
+    goes through `Repo.open`, which sets `busy_timeout` first) the loser simply
+    blocks and then finds nothing left to do. This is the second line of
+    defense for a caller that runs DDL directly against the file without that
+    lock (e.g. `sqlite3 wiki.db` by hand, or a future caller that forgets the
+    lock): `ALTER TABLE ... ADD COLUMN` and `CREATE TABLE`/`CREATE INDEX`
+    re-runs raise a specific, recognizable error rather than corrupting
+    anything, so we swallow exactly those and re-raise everything else.
+    """
+    try:
+        conn.execute(stmt)
+    except sqlite3.OperationalError as e:
+        msg = str(e).lower()
+        if "duplicate column name" in msg or "already exists" in msg:
+            return
+        raise
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply pending migrations in ascending order. Returns the new user_version.
 
     Cheap and safe to call on every open: when the DB is already current it does
-    a single `PRAGMA user_version` read and returns.
+    a single `PRAGMA user_version` read and returns — no lock is taken.
+
+    When a migration IS pending, the whole apply sequence runs inside
+    `BEGIN IMMEDIATE`: this takes SQLite's RESERVED write lock up front, so a
+    second process that opens the same behind-schema DB at the same moment
+    (the concurrent-first-open race after an upgrade) blocks on that lock
+    instead of racing the DDL. `Repo.open` sets `PRAGMA busy_timeout` before
+    calling this, so the blocked caller waits rather than failing with
+    "database is locked"; once unblocked it re-reads `user_version` (the
+    `current = conn.execute(...)` inside the `try:` below) and finds the
+    migration already applied, so it does nothing.
     """
     current = conn.execute("PRAGMA user_version").fetchone()[0]
-    applied = False
-    for target in sorted(MIGRATIONS):
-        if target > current:
-            for stmt in MIGRATIONS[target]:
-                conn.execute(stmt)
-            conn.execute(f"PRAGMA user_version={target}")
-            current = target
-            applied = True
-    if applied:
-        conn.commit()
+    if current >= latest_version():
+        return current
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-read: a concurrent migrator may have finished while we waited for
+        # the lock above.
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        applied = False
+        for target in sorted(MIGRATIONS):
+            if target > current:
+                for stmt in MIGRATIONS[target]:
+                    _apply(conn, stmt)
+                conn.execute(f"PRAGMA user_version={target}")
+                current = target
+                applied = True
+        conn.commit() if applied else conn.rollback()
+    except BaseException:
+        conn.rollback()
+        raise
     return current

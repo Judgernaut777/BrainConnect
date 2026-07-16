@@ -118,14 +118,31 @@ were. Every state is a file; nothing is destroyed in place.
 
 ## 4. Upgrade
 
-Schema migrations are forward-only and run automatically on the first `Repo.open`
-after an upgrade — including the open that `serve` performs at launch
-(`docs/MIGRATIONS.md`). To upgrade safely:
+Schema migrations are forward-only (`docs/MIGRATIONS.md`). **They no longer run
+silently at server startup.** `serve` / `mcp serve` open with a check-then-refuse
+guard: a behind-schema database makes the server refuse to start with a clear
+error, instead of migrating it out from under you. To upgrade safely:
 
-1. `brainconnect backup --out pre-upgrade.db`  (roll-back point)
-2. install the new version
-3. start it once (`brainconnect health` is enough) — migrations apply
-4. if anything looks wrong, stop and `brainconnect restore --from pre-upgrade.db`
+1. `brainconnect migrate --check`  (reports current vs. target version, exits
+   nonzero if a migration is needed; mutates nothing)
+2. `brainconnect migrate`  (snapshots the db first — reusing the same backup
+   helper as `brainconnect backup` — then applies pending DDL; `--no-backup`
+   skips the snapshot, `--backup-out` relocates it)
+3. install the new version, then start it — `serve`/`mcp serve` now see a
+   current schema and start normally
+4. if anything looks wrong, stop and `brainconnect restore --from <the
+   pre-migrate backup step 2 wrote>`
+
+The old always-migrate behavior is still available as an explicit opt-in for a
+single-writer deployment that wants one-command upgrades: pass `--auto-migrate`
+to `serve` / `mcp serve`, or set `BRAINCONNECT_AUTO_MIGRATE=1`. Two servers
+racing to auto-migrate the same behind-schema db at once are still safe —
+`migrate()` takes SQLite's write lock (`BEGIN IMMEDIATE`) around the whole apply
+sequence, so the loser blocks and finds nothing left to do — but refuse-by-default
+remains the recommended path, because it puts a human in the loop before DDL runs
+against a database that may not be snapshotted yet. `Repo.open()` itself is
+unchanged for the CLI and library: it still migrates by default (`migrate=True`);
+only the server entry points switched to the check-then-refuse model.
 
 Verified: a ledger authored at the RC1 tag opens intact under current code, and a
 genuine pre-ledger schema-v8 database migrates to v9 with every pre-existing claim

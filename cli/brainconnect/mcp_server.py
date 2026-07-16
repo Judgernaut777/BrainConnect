@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import re
 
-from .db import Repo
+from .db import Repo, open_for_server
 from . import search as searchmod
 from . import embed as embedmod
 from . import safety as safetymod
@@ -325,7 +325,8 @@ class McpUnavailable(Exception):
 
 
 def build_server(*, read_only: bool = False, contribute_only: bool = False,
-                 review: bool = False, root=None):
+                 review: bool = False, root=None,
+                 auto_migrate: bool | None = None):
     """Construct the FastMCP server and register tools. Separated from `serve()`
     so the wiring is testable without blocking on stdio. Opens a fresh Repo per
     tool call (WAL-safe; keeps `capture` writes from holding a long-lived
@@ -338,6 +339,12 @@ def build_server(*, read_only: bool = False, contribute_only: bool = False,
         agent fleet that may contribute findings but must not read the brain back
       * ``review`` — adds the human-gated ``brain_pending`` / ``brain_promote`` /
         ``brain_reject``. Never expose this to an agent.
+
+    **Startup does not silently migrate** (docs/MIGRATIONS.md): the launch open
+    below uses `db.open_for_server`, which refuses (`SchemaBehindError`) to
+    start against a behind-schema DB unless `auto_migrate=True` or
+    `BRAINCONNECT_AUTO_MIGRATE=1` is set. Every per-tool-call open thereafter
+    (`_run`) passes `migrate=False` — a tool call must never trigger a migration.
     """
     check_modes(read_only=read_only, contribute_only=contribute_only, review=review)
     try:
@@ -348,7 +355,7 @@ def build_server(*, read_only: bool = False, contribute_only: bool = False,
 
     # Resolve the repo root once at launch so tools find config.toml regardless
     # of the client's cwd.
-    with Repo.open(root) as probe:
+    with open_for_server(root, auto_migrate=auto_migrate) as probe:
         resolved_root = probe.root
         recall_k = int(probe.cfg.mcp_cfg("recall_k") or 8)
 
@@ -361,7 +368,9 @@ def build_server(*, read_only: bool = False, contribute_only: bool = False,
                              review=review))
 
     def _run(fn):
-        with Repo.open(resolved_root) as repo:
+        # migrate=False: the startup open above already confirmed (or brought
+        # current) the schema; a tool call must never migrate it.
+        with Repo.open(resolved_root, migrate=False) as repo:
             return json.dumps(fn(repo), ensure_ascii=False, indent=2)
 
     if "brain_search" in allowed:
@@ -471,7 +480,8 @@ def build_server(*, read_only: bool = False, contribute_only: bool = False,
 
 
 def serve(*, read_only: bool = False, contribute_only: bool = False,
-          review: bool = False, root=None) -> None:
+          review: bool = False, root=None,
+          auto_migrate: bool | None = None) -> None:
     """Build and run the stdio MCP server (blocks until the client disconnects)."""
     build_server(read_only=read_only, contribute_only=contribute_only,
-                 review=review, root=root).run()
+                 review=review, root=root, auto_migrate=auto_migrate).run()

@@ -1,10 +1,35 @@
 # MIGRATIONS.md — schema evolution, and the live-DB hazard
 
-## The hazard, stated once
+## Status: server-side hazard fixed
 
-**`Repo.open()` runs forward migrations on every open.** Not on `brainconnect migrate`. Not
-on an explicit opt-in. Every open — including the one `build_server()` performs to
-resolve the repo root, and the one every `wiki` subcommand performs.
+`serve` and `mcp serve` no longer auto-migrate at startup. They open with
+`db.open_for_server`, which checks the on-disk schema against `SCHEMA_VERSION`
+and **refuses to start** (`SchemaBehindError`, with a clear message) if it is
+behind — unless the operator opts in with `--auto-migrate` or
+`BRAINCONNECT_AUTO_MIGRATE=1`. Every per-request/per-tool-call `Repo.open`
+after that startup check passes `migrate=False`, so a request handler can never
+trigger a migration either. Use the new explicit `brainconnect migrate`
+(`--check`/`--check-schema` to only report; snapshots via the same backup
+helper as `brainconnect backup` before applying DDL, `--no-backup` to skip it)
+to upgrade a database on purpose. See §4 of `docs/OPERATIONS.md` for the
+upgrade procedure.
+
+`Repo.open()`'s own **default** is unchanged: `migrate=True`, so the CLI and
+library keep auto-migrating on open exactly as before (pass `migrate=False` to
+opt out). The concurrent-first-open race described below is additionally closed
+at the source: `migrate()` now runs the whole apply sequence inside
+`BEGIN IMMEDIATE`, so two callers that both see a behind schema at once
+serialize on SQLite's write lock instead of racing the DDL.
+
+## The hazard, as it originally read (now server-scoped, not eliminated at the
+## `Repo.open()` level)
+
+**`Repo.open()` runs forward migrations on every open (by default).** Not on
+`brainconnect migrate` specifically — literally every open that doesn't pass
+`migrate=False`, which used to mean everything, including the one
+`build_server()` performs to resolve the repo root, and the one every `wiki`
+subcommand performs. The CLI and library paths still work this way; the
+server entry points (`serve`, `mcp serve`) do not, as of the fix above.
 
 **Passing a temp `root=` is not isolation.** `root` selects which `config.toml` is
 read. The database lives at an absolute path *inside* that config

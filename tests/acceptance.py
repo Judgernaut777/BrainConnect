@@ -4224,6 +4224,9 @@ def main():
     # ---------------- Decima knowledge federation (ADR 0008 Lane 5) ----------
     _federation_checks()
 
+    # ---------------- Migration safety hardening -----------------------------
+    _migration_safety_checks()
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
@@ -8189,6 +8192,244 @@ def _okf_roundtrip_checks():
             os.environ["BRAINCONNECT_DB"] = _saved
         if _saved_legacy is not None:
             os.environ["WIKIBRAIN_DB"] = _saved_legacy
+
+
+def _make_behind_schema_repo(tag: str) -> Path:
+    """A full wiki-brain repo (config.toml + scaffold) whose database is a
+    genuinely OLD (pre-v9) schema, stamped at `user_version=1` — the same v1
+    shape used by the raw migration-runner fixture at the top of this file, not
+    just a version-number lie. Used by `_migration_safety_checks` to exercise
+    the migration-safety hardening (explicit `migrate` subcommand, `--check`,
+    `Repo.open(migrate=False)`, server refuse-by-default) against a database
+    that is actually behind `SCHEMA_VERSION`.
+    """
+    root = Path(tempfile.mkdtemp(prefix=f"wikibrain-behind-{tag}-"))
+    db = root / "wiki.db"
+    write(root / "config.toml",
+          f'[paths]\ndb = "{db.as_posix()}"\nbookmark_folder = "wiki"\n'
+          '[gate]\nauto_promote_confidence = 0.85\nmachine_confidence_ceiling = 0.9\n'
+          '[budgets]\nqueries_per_question = 2\nfetches_per_question = 2\n'
+          'questions_per_night = 3\nfetches_per_night = 3\n'
+          '[search]\nengine = "ddg"\n[lint]\nstale_days = 30\ncontradiction_days = 14\n')
+    for d in ("raw", "inbox", "wiki/entities", "wiki/concepts", "wiki/sources",
+              "wiki/syntheses", "db"):
+        (root / d).mkdir(parents=True, exist_ok=True)
+    write(root / "log.md", "# log\n")
+    import sqlite3 as _sqlite3_bs
+    c = _sqlite3_bs.connect(str(db))
+    c.executescript(
+        "CREATE TABLE sources (id INTEGER PRIMARY KEY, hash TEXT UNIQUE NOT NULL, "
+        "path TEXT NOT NULL, title TEXT, url TEXT, origin TEXT NOT NULL, "
+        "fetched_at TEXT, ingested_at TEXT, status TEXT NOT NULL DEFAULT 'new');"
+        "CREATE TABLE claims (id INTEGER PRIMARY KEY, text TEXT NOT NULL, "
+        "source_id INTEGER NOT NULL REFERENCES sources(id), location TEXT, "
+        "confidence REAL NOT NULL, origin TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'pending', superseded_by INTEGER REFERENCES claims(id), "
+        "created_at TEXT NOT NULL, reviewed_at TEXT);"
+        "CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, "
+        "kind TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]');"
+        "CREATE TABLE relations (id INTEGER PRIMARY KEY, src INTEGER NOT NULL REFERENCES entities(id), "
+        "rel TEXT NOT NULL, dst INTEGER NOT NULL REFERENCES entities(id), "
+        "claim_id INTEGER REFERENCES claims(id), UNIQUE(src, rel, dst, claim_id));"
+        "CREATE TABLE claim_entities (claim_id INTEGER NOT NULL REFERENCES claims(id), "
+        "entity_id INTEGER NOT NULL REFERENCES entities(id), PRIMARY KEY (claim_id, entity_id));"
+        "CREATE TABLE escalations (id INTEGER PRIMARY KEY, "
+        "source_id INTEGER NOT NULL REFERENCES sources(id), reason TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'open');"
+        "CREATE TABLE contradictions (id INTEGER PRIMARY KEY, "
+        "claim_a INTEGER NOT NULL REFERENCES claims(id), "
+        "claim_b INTEGER NOT NULL REFERENCES claims(id), "
+        "status TEXT NOT NULL DEFAULT 'open', resolution TEXT);"
+    )
+    c.execute("INSERT INTO sources(hash, path, origin) VALUES ('h1','raw/x.md','clip')")
+    c.execute("INSERT INTO claims(id, text, source_id, confidence, origin, status, "
+              "created_at) VALUES (1,'a durable fact',1,0.9,'clip','promoted','2026-01-01')")
+    c.execute("PRAGMA user_version=1")
+    c.commit()
+    c.close()
+    return root
+
+
+def _migration_safety_checks():
+    """HIGH-severity operational hazard fix (docs/MIGRATIONS.md): `Repo.open()`
+    used to migrate on EVERY open — including server startup and per-request
+    opens — with no explicit `migrate` command, no `--no-migrate`/`--check`
+    escape hatch, no lock (so two concurrent first-opens after an upgrade could
+    crash with "duplicate column"/"table already exists"), and no
+    pre-migration snapshot.
+
+    Checks here (never touching a real ~/.wiki-brain DB — every repo is a fresh
+    `tempfile.mkdtemp()` root with `migrate=False`/explicit `start=` throughout):
+
+      (a) `Repo.open(migrate=False)` on a behind-schema DB does not mutate it.
+      (b) `brainconnect migrate --check` reports "behind" and exits nonzero,
+          without mutating.
+      (c) `brainconnect migrate` snapshots first (reusing `backup.backup`) and
+          then bumps the DB to `SCHEMA_VERSION`; `--no-backup` skips the snapshot.
+      (e) migrate is idempotent: running the command again once current is a
+          clean no-op.
+      (d) `server.build_server` (and, via the same shared `db.open_for_server`
+          helper, `mcp_server.build_server`) refuses to start against a
+          behind-schema DB unless opted in (`auto_migrate=True` /
+          `BRAINCONNECT_AUTO_MIGRATE=1`), and the refusal itself mutates nothing.
+    """
+    print("[migrate-safety] explicit `migrate` cmd, --check, migrate=False, "
+          "server refuse-by-default, idempotent DDL, concurrent-open lock")
+    import sqlite3 as _sqlite3_ms
+    from brainconnect.db import SchemaBehindError, open_for_server
+    from brainconnect import cli as _clim
+
+    def _cli_run(argv, cwd):
+        prev = os.getcwd()
+        os.chdir(cwd)
+        try:
+            _clim.main(argv)
+            return 0
+        except SystemExit as e:
+            return e.code or 0
+        finally:
+            os.chdir(prev)
+
+    def _raw_version(db_path: Path) -> int:
+        c = _sqlite3_ms.connect(str(db_path))
+        try:
+            return c.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            c.close()
+
+    # -- (a) Repo.open(migrate=False) never mutates a behind-schema DB ---------
+    aroot = _make_behind_schema_repo("open")
+    with Repo.open(start=aroot, migrate=False) as r:
+        status_a = r.schema_status()
+        ver_a = r.one("PRAGMA user_version")[0]
+    check("Repo.open(migrate=False) leaves user_version untouched (still v1)",
+          ver_a == 1)
+    check("Repo.open(migrate=False)'s schema_status() reports behind=True "
+          "against the real SCHEMA_VERSION",
+          status_a == {"current": 1, "latest": schemamod.SCHEMA_VERSION, "behind": True})
+    check("...and the file on disk is genuinely untouched (no migration ran)",
+          _raw_version(aroot / "wiki.db") == 1)
+
+    # -- (b) `migrate --check` reports behind, exits nonzero, mutates nothing --
+    check_code = _cli_run(["migrate", "--check"], aroot)
+    check("`brainconnect migrate --check` exits nonzero when the schema is behind",
+          check_code != 0)
+    check("`brainconnect migrate --check` did not mutate the db",
+          _raw_version(aroot / "wiki.db") == 1)
+    check_code_json = _cli_run(["migrate", "--check-schema", "--json"], aroot)
+    check("`brainconnect migrate --check-schema` (long alias) also exits nonzero",
+          check_code_json != 0)
+
+    # -- (c) `migrate` snapshots first, then bumps to SCHEMA_VERSION -----------
+    croot = _make_behind_schema_repo("cmd")
+    cmd_code = _cli_run(["migrate"], croot)
+    check("`brainconnect migrate` exits 0", cmd_code == 0)
+    check("`brainconnect migrate` bumps the db to SCHEMA_VERSION",
+          _raw_version(croot / "wiki.db") == schemamod.SCHEMA_VERSION)
+    backups = list(croot.glob("wiki.db.pre-migrate-v*"))
+    check("`brainconnect migrate` writes exactly one pre-migration backup by default",
+          len(backups) == 1 and backups[0].stat().st_size > 0)
+    check("the backup captures the PRE-migration (v1) state, not the migrated one",
+          _raw_version(backups[0]) == 1)
+    # A --check run now (post-migrate) reports current, exits 0.
+    postcheck_code = _cli_run(["migrate", "--check"], croot)
+    check("`migrate --check` on an already-current db exits 0 (nothing pending)",
+          postcheck_code == 0)
+
+    # --no-backup skips the snapshot.
+    nroot = _make_behind_schema_repo("nobackup")
+    nobackup_code = _cli_run(["migrate", "--no-backup"], nroot)
+    check("`brainconnect migrate --no-backup` exits 0", nobackup_code == 0)
+    check("--no-backup writes no snapshot",
+          not list(nroot.glob("wiki.db.pre-migrate-v*")))
+    check("--no-backup still migrates the db",
+          _raw_version(nroot / "wiki.db") == schemamod.SCHEMA_VERSION)
+
+    # -- (e) migrate is idempotent: re-running once current is a clean no-op --
+    rerun_code = _cli_run(["migrate"], croot)
+    check("re-running `brainconnect migrate` once current exits 0 (no crash)",
+          rerun_code == 0)
+    check("...and does not change the version",
+          _raw_version(croot / "wiki.db") == schemamod.SCHEMA_VERSION)
+    # And at the lower level: migrate.migrate() on an at-latest connection is a
+    # single PRAGMA read (no lock, no statement re-execution, no crash).
+    idem_conn = _sqlite3_ms.connect(str(croot / "wiki.db"))
+    try:
+        v1 = migratemod.migrate(idem_conn)
+        v2 = migratemod.migrate(idem_conn)
+        check("migrate.migrate() run twice back-to-back on a current db is a "
+              "no-op both times (same version, no exception)",
+              v1 == v2 == schemamod.SCHEMA_VERSION)
+    finally:
+        idem_conn.close()
+
+    # -- (d) a server refuses to start against a behind-schema DB by default,
+    #        starts (and migrates) when opted in ------------------------------
+    droot = _make_behind_schema_repo("server")
+    refused = False
+    try:
+        with open_for_server(droot):
+            pass
+    except SchemaBehindError:
+        refused = True
+    check("db.open_for_server refuses a behind-schema DB by default "
+          "(SchemaBehindError)", refused)
+    check("...and the refusal itself mutated nothing",
+          _raw_version(droot / "wiki.db") == 1)
+
+    from brainconnect import server as _srvmod2
+    refused_server = False
+    try:
+        _srvmod2.build_server("127.0.0.1", 0, root=droot)
+    except SchemaBehindError:
+        refused_server = True
+    check("server.build_server refuses to start against a behind-schema DB "
+          "without --auto-migrate", refused_server)
+    check("...and server.build_server's refusal mutated nothing",
+          _raw_version(droot / "wiki.db") == 1)
+
+    httpd = _srvmod2.build_server("127.0.0.1", 0, root=droot, auto_migrate=True)
+    try:
+        check("server.build_server starts (and migrates) with auto_migrate=True",
+              httpd is not None
+              and _raw_version(droot / "wiki.db") == schemamod.SCHEMA_VERSION)
+    finally:
+        httpd.server_close()
+
+    # BRAINCONNECT_AUTO_MIGRATE=1 is the env-var opt-in equivalent (used by the
+    # MCP server too, via the same shared db.open_for_server helper — exercised
+    # directly here since the [mcp] extra may not be installed in this env).
+    eroot = _make_behind_schema_repo("envopt")
+    refused_env = False
+    try:
+        with open_for_server(eroot):
+            pass
+    except SchemaBehindError:
+        refused_env = True
+    check("open_for_server refuses by default even for the env-var-opt-in path "
+          "(no env set yet)", refused_env)
+    _saved_auto = os.environ.pop("BRAINCONNECT_AUTO_MIGRATE", None)
+    os.environ["BRAINCONNECT_AUTO_MIGRATE"] = "1"
+    try:
+        with open_for_server(eroot):
+            pass
+    finally:
+        if _saved_auto is None:
+            os.environ.pop("BRAINCONNECT_AUTO_MIGRATE", None)
+        else:
+            os.environ["BRAINCONNECT_AUTO_MIGRATE"] = _saved_auto
+    check("BRAINCONNECT_AUTO_MIGRATE=1 migrates a behind-schema db at server "
+          "startup instead of refusing",
+          _raw_version(eroot / "wiki.db") == schemamod.SCHEMA_VERSION)
+
+    # mcp_server.build_server shares the exact same open_for_server call —
+    # confirm the wiring (signature carries auto_migrate) without requiring the
+    # optional [mcp] extra to be installed in this environment.
+    import inspect as _insp_ms
+    mcp_sig = _insp_ms.signature(mcpmod.build_server)
+    check("mcp_server.build_server's signature carries the auto_migrate opt-in "
+          "(same refuse-by-default wiring as server.build_server)",
+          "auto_migrate" in mcp_sig.parameters)
 
 
 if __name__ == "__main__":

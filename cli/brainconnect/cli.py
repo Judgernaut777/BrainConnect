@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 from .config import Config
-from .db import Repo, init_db
+from .db import Repo, init_db, SchemaBehindError, AUTO_MIGRATE_ENV_VAR
+from . import migrate as migratemod
 from . import (ingest, search as searchmod, queue as queuemod, render as rendermod,
                lint as lintmod, health as healthmod, gather, gate as gatemod,
                review, fetch as fetchmod, drop as dropmod, extract as extractmod,
@@ -1165,8 +1166,11 @@ def cmd_mcp(args):
     if args.mcmd == "serve":
         try:
             mcpmod.serve(read_only=read_only, contribute_only=contribute_only,
-                         review=review_mode)
+                         review=review_mode,
+                         auto_migrate=getattr(args, "auto_migrate", False) or None)
         except mcpmod.McpUnavailable as e:
+            sys.exit(f"error: {e}")
+        except SchemaBehindError as e:
             sys.exit(f"error: {e}")
     elif args.mcmd == "info":
         with Repo.open() as repo:
@@ -1407,9 +1411,61 @@ def cmd_perfcapture(args):
 def cmd_serve(args):
     token = (args.token or os.environ.get(servermod.TOKEN_ENV_VAR, "")).strip() or None
     try:
-        servermod.serve(args.host, args.port, token=token)
+        servermod.serve(args.host, args.port, token=token,
+                        auto_migrate=args.auto_migrate or None)
     except OSError as e:
         sys.exit(f"error: could not bind {args.host}:{args.port} ({e})")
+    except SchemaBehindError as e:
+        sys.exit(f"error: {e}")
+
+
+def cmd_migrate(args):
+    """Explicit schema migration (docs/MIGRATIONS.md): report current vs latest,
+    snapshot the DB first (reusing `backup.backup`, unless --no-backup), then
+    apply pending DDL. This is the safe replacement for the old behavior of
+    every `Repo.open()` silently migrating on every launch."""
+    with Repo.open(migrate=False) as repo:
+        status = repo.schema_status()
+        out = {
+            "db": str(repo.cfg.db_path),
+            "current_version": status["current"],
+            "target_version": status["latest"],
+            "behind": status["behind"],
+        }
+        if args.check:
+            if not _emit(out, args.json):
+                if status["behind"]:
+                    print(f"migrate --check: db is v{status['current']}, code "
+                          f"expects v{status['latest']}; migration needed. Run "
+                          "`brainconnect migrate` to apply it.")
+                else:
+                    print(f"migrate --check: db is v{status['current']} "
+                          "(current; no migration needed).")
+            sys.exit(1 if status["behind"] else 0)
+
+        if not status["behind"]:
+            if not _emit(out, args.json):
+                print(f"migrate: db already at v{status['current']} "
+                      "(current); nothing to do.")
+            return
+
+        backup_info = None
+        if not args.no_backup:
+            dest = (args.backup_out or
+                    f"{repo.cfg.db_path}.pre-migrate-v{status['current']}")
+            backup_info = backupmod.backup(repo, dest)
+
+        new_version = migratemod.migrate(repo.conn)
+        out["new_version"] = new_version
+        out["migrated"] = True
+        if backup_info is not None:
+            out["backup"] = backup_info["backup"]
+
+    if _emit(out, args.json):
+        return
+    print(f"migrate: v{status['current']} -> v{new_version}"
+          + (f" (backup: {backup_info['backup']})" if backup_info
+             else " (--no-backup: no snapshot taken)"))
 
 
 # --- parser -----------------------------------------------------------------
@@ -1928,7 +1984,27 @@ def build_parser() -> argparse.ArgumentParser:
     ssv.add_argument("--token", default="",
                      help="require this bearer token on every route except GET "
                           f"/health (or set {servermod.TOKEN_ENV_VAR})")
+    ssv.add_argument("--auto-migrate", action="store_true",
+                     help="migrate a behind-schema DB at startup instead of "
+                          f"refusing to start (or set {AUTO_MIGRATE_ENV_VAR}=1); "
+                          "default is to refuse and tell you to run "
+                          "`brainconnect migrate`")
     ssv.set_defaults(func=cmd_serve)
+
+    # migrate: explicit schema migration (docs/MIGRATIONS.md) — snapshot then
+    # apply DDL, replacing the old implicit migrate-on-every-open behavior.
+    smg = sub.add_parser(
+        "migrate",
+        help="apply pending schema migrations (snapshots first by default)")
+    smg.add_argument("--check", "--check-schema", dest="check", action="store_true",
+                     help="report only: exit nonzero if the schema is behind "
+                          "SCHEMA_VERSION; never mutates")
+    smg.add_argument("--no-backup", action="store_true",
+                     help="skip the pre-migration snapshot")
+    smg.add_argument("--backup-out",
+                     help="snapshot destination (default: <db>.pre-migrate-vN)")
+    addj(smg)
+    smg.set_defaults(func=cmd_migrate)
 
     # backup / restore: WAL-safe snapshot & recovery (docs/OPERATIONS.md)
     sbk = sub.add_parser(
@@ -1960,6 +2036,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcserve.add_argument("--review", action="store_true",
                          help="also expose the HUMAN-GATED brain_pending/promote/reject "
                               "tools — never point an agent at this")
+    mcserve.add_argument("--auto-migrate", action="store_true",
+                         help="migrate a behind-schema DB at startup instead of "
+                              f"refusing to start (or set {AUTO_MIGRATE_ENV_VAR}=1); "
+                              "default is to refuse and tell you to run "
+                              "`brainconnect migrate`")
     mcinfo = mcsub.add_parser("info", help="print MCP client config snippet")
     mcinfo.add_argument("--contribute-only", action="store_true",
                         help="emit a config for a write-only (contribute-only) server")
