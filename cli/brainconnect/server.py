@@ -83,8 +83,11 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 TOKEN_ENV_VAR = "BRAINCONNECT_TOKEN"
 
-#: Larger than any legitimate capture (safety caps text at 200k chars) but small
-#: enough that a runaway client cannot balloon the process.
+#: Larger than any legitimate capture but small enough that a runaway client cannot
+#: balloon the process. This is only a byte ceiling on the request body, not a safety
+#: cap: safety truncates text past `max_text_chars` (200k) before scanning and
+#: manufactures a `scanner_error` for the dropped tail, so an oversized capture is
+#: escalated (quarantined), never silently accepted as clean.
 MAX_BODY_BYTES = 2_000_000
 
 _PROMOTE_PATH = re.compile(r"^/candidates/([^/]+)/promote$")

@@ -1417,6 +1417,24 @@ def main():
               _r.has(CAT.pii) and _r.decision is D.redact
               and "example.com" not in _r.text)
 
+        # --- truncation: the unscanned tail is not clean (BC-SEC-1) -----------
+        # A secret placed past max_text_chars never reaches an engine. It must NOT
+        # be stored verbatim while the scan reports clean: the dropped tail becomes
+        # a scanner_error so the decision escalates, and the returned text never
+        # carries bytes no engine looked at.
+        _trunc_cfg = safetycfg.load({"enabled": True, "max_text_chars": 64,
+                                     "engines": {"baseline": {"enabled": True,
+                                                              "required": True}}})
+        _trunc_secret = "ghp_" + "b" * 36
+        _trunc_text = ("a" * 200) + " " + _trunc_secret
+        _trunc = safetymod.scan(_trunc_text, surface="memory_candidate",
+                                config=_trunc_cfg)
+        check("safety: a secret past max_text_chars is NOT stored in plaintext",
+              _trunc_secret not in _trunc.text)
+        check("safety: an over-length capture is not marked clean (tail unscanned)",
+              _trunc.decision is not D.allow and not _trunc.clean
+              and _trunc.has(CAT.scanner_error))
+
         # --- aggregation: union, dedup, span merge, severity, attribution -----
         _install(detect_secrets=lambda **kw: _FakeSecret(), presidio=lambda **kw: _FakeQuiet())
         _agg_cfg = safetycfg.load(_engines_cfg(

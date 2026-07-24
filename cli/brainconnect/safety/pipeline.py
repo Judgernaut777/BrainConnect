@@ -125,6 +125,23 @@ def _error_findings(outcomes: list[EngineOutcome]) -> list[Finding]:
     return out
 
 
+def _truncation_finding(limit: int) -> Finding:
+    """Turn "the tail was dropped before scanning" into a decision the policy sees.
+
+    Truncation removes everything past `limit` before any engine looks, so a secret
+    past the boundary would otherwise be stored while the scan reads clean. This is
+    the same "unscanned is not clean" situation `_error_findings` handles for an
+    engine that could not look, so it gets the same `scanner_error` treatment.
+    """
+    return Finding(
+        engine="pipeline", engine_version="",
+        kind=Category.scanner_error, rule="text_truncated",
+        severity=RiskLevel.medium,
+        message=(f"text exceeded {limit} characters; the tail was truncated before "
+                 "scanning and is unscanned, not clean"),
+        metadata={"limit": limit})
+
+
 def _dedupe(findings: list[Finding]) -> list[Finding]:
     """Drop exact repeats; keep every distinct engine's view.
 
@@ -161,7 +178,8 @@ def scan(text: str, *, surface: str, config: SafetyConfig,
     norm = normalize(original)
     scanned = norm.text
     notes = list(norm.notes)
-    if len(scanned) > config.max_text_chars:
+    truncated = len(scanned) > config.max_text_chars
+    if truncated:
         scanned = scanned[:config.max_text_chars]
         notes.append(f"text truncated to {config.max_text_chars} characters "
                      "before scanning")
@@ -197,6 +215,13 @@ def scan(text: str, *, surface: str, config: SafetyConfig,
     for o in outcomes:
         findings.extend(f for f in o.findings if f.kind in wanted)
     findings.extend(_error_findings(outcomes))
+    if truncated:
+        # The tail past max_text_chars reached no engine. Unscanned is not clean:
+        # manufacture the same `scanner_error` that `_error_findings` makes for an
+        # engine that did not look, so every policy escalates away from `allow`
+        # (quarantine at capture/recall, block at promotion) instead of storing a
+        # secret in the tail while reporting the scan clean.
+        findings.append(_truncation_finding(config.max_text_chars))
     findings = _dedupe(findings)
 
     decision = strongest(pol.decide(f.kind, f.severity) for f in findings)
@@ -204,6 +229,10 @@ def scan(text: str, *, surface: str, config: SafetyConfig,
     to_mask = [f for f in findings if pol.decide(f.kind, f.severity) is Decision.redact]
     if to_mask:
         final = redaction.redact(scanned, to_mask)
+    elif truncated:
+        # Never hand back — nor persist — bytes no engine looked at. The scanned
+        # window is all that was examined, so that is all the caller gets.
+        final = scanned
     else:
         # Nothing to hide: hand back exactly what the caller gave us. Normalization
         # is a scanning aid, not a licence to rewrite the user's text.
