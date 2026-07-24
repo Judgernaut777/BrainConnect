@@ -17,7 +17,6 @@ import base64 as _base64
 import inspect
 import json
 import os
-import shutil as _shutil
 import struct as _struct
 import sys
 import tempfile
@@ -1287,21 +1286,22 @@ def main():
         check("safety: an external tool with no executable is unavailable",
               _Missing().available() is False)
 
-        # timeout -> TimeoutError, which the pipeline maps to EngineStatus.timeout
+        # timeout -> TimeoutError, which the pipeline maps to EngineStatus.timeout.
+        # Driven through the Python interpreter (not `sh`) so the check runs on every
+        # CI leg, including windows-latest where `sh` is normally absent.
         class _Sleeper(ExternalToolEngine):
             name, version = "sleeper", "cli"
             capabilities = frozenset({CAP.source_or_repository_secrets})
-            executable = "sh"
+            executable = sys.executable
 
             def argv(self, target):
-                return ["sh", "-c", "sleep 5"]
+                return [sys.executable, "-c", "import time; time.sleep(5)"]
 
             def parse(self, stdout, text):  # pragma: no cover - never reached
                 return []
-        if _shutil.which("sh"):
-            check("safety: an external tool that overruns raises TimeoutError",
-                  _raises(TimeoutError, _Sleeper(timeout_seconds=0.2).scan,
-                          EngineScanRequest(text="x", surface="memory_promotion")))
+        check("safety: an external tool that overruns raises TimeoutError",
+              _raises(TimeoutError, _Sleeper(timeout_seconds=0.2).scan,
+                      EngineScanRequest(text="x", surface="memory_promotion")))
 
         # json_lines / locate: the parse plumbing every CLI adapter shares
         check("safety: json_lines skips prose and keeps objects",
@@ -7510,7 +7510,8 @@ def _okf_validate_checks():
         check("okf/validate: a relative symlink escaping the root is rejected",
               "symlink_escape" in codes(adapter.validate_bundle(str(d2))))
     else:
-        check("okf/validate: symlink-escape (skipped: no symlink support)", True)
+        print("    (symlink-escape checks skipped — no symlink support on this "
+              "platform)")
 
     # -- unsafe / unicode filenames -------------------------------------------
     d = valid_bundle("unicode_ok")
