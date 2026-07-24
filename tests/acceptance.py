@@ -2536,7 +2536,10 @@ def main():
     _repo_root = Path(__file__).resolve().parents[1]
     bc_sh = _repo_root / "brainconnect.sh"
     check("POSIX brainconnect.sh wrapper exists at the repo root", bc_sh.is_file())
-    check("brainconnect.sh is executable", bc_sh.stat().st_mode & 0o111 != 0)
+    if os.name == "nt":
+        print("    (exec-bit checks skipped — NTFS carries no POSIX exec bit)")
+    else:
+        check("brainconnect.sh is executable", bc_sh.stat().st_mode & 0o111 != 0)
     check("no bare 'wiki' file at the repo root "
           "(it would collide with the generated wiki/ vault dir)",
           not (_repo_root / "wiki").exists())
@@ -2548,7 +2551,8 @@ def main():
 
     mech_sh = _repo_root / "scripts" / "mechanical-maintain.sh"
     check("POSIX mechanical-maintain.sh exists beside the .ps1", mech_sh.is_file())
-    check("mechanical-maintain.sh is executable", mech_sh.stat().st_mode & 0o111 != 0)
+    if os.name != "nt":
+        check("mechanical-maintain.sh is executable", mech_sh.stat().st_mode & 0o111 != 0)
 
     readme_text = (_repo_root / "README.md").read_text(encoding="utf-8")
     check("README documents a POSIX venv setup block",
@@ -3231,9 +3235,12 @@ def main():
     freshdir = Path(tempfile.mkdtemp(prefix="wikibrain-freshinit-"))
     fake_home = Path(tempfile.mkdtemp(prefix="wikibrain-freshinit-home-"))
     prev_cwd = os.getcwd()
-    prev_home = os.environ.get("HOME")
+    # Both spellings: POSIX Path.home() reads HOME, Windows reads USERPROFILE
+    # (same idiom as the skills global-install block above).
+    prev_home = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
     os.chdir(freshdir)
     os.environ["HOME"] = str(fake_home)
+    os.environ["USERPROFILE"] = str(fake_home)
     try:
         init_ok = True
         try:
@@ -3287,10 +3294,11 @@ def main():
               == _cfg_before + "# user edit\n")
     finally:
         os.chdir(prev_cwd)
-        if prev_home is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = prev_home
+        for _k, _v in prev_home.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
 
     # (3) `brainconnect-librarian status` surfaces reachability (+ why not) from
     # client.reachable(), stubbed offline — never a live network call.
