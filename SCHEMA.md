@@ -3,7 +3,7 @@
 This file is the living contract for *how the database is used* — vocabularies,
 state machines, and the heuristics that code applies. BUILD_SPEC.md is the
 starting design; this file co-evolves as conventions are refined. Claude Code
-maintains it. The DDL itself lives in `cli/wiki/schema.py`.
+maintains it. The DDL itself lives in `cli/brainconnect/schema.py`.
 
 ## Provenance: `origin` values
 Stored on `sources.origin` and copied onto `claims.origin` at extraction time.

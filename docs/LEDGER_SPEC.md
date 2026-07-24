@@ -9,9 +9,10 @@ the living conventions file. Where this document and `BUILD_SPEC.md` disagree ab
 
 ## 1. Identity
 
-The product is **BrainConnect**. The Python package, the CLI, and the MCP tool names
-still say `wiki` / `brain_*`; that rename is deferred work, tracked in
-[STATUS.md](STATUS.md). This document uses both names as they appear in code.
+The product is **BrainConnect**. The Python package (`brainconnect`) and the CLI
+(`brainconnect`, `brainconnect-librarian`) are renamed to match; only the MCP tool
+names still say `brain_*` (see [STATUS.md](STATUS.md)). This document uses both
+names as they appear in code.
 
 BrainConnect is a **trusted memory ledger and human-readable projection layer** for
 agent systems. It specialises in:
@@ -69,11 +70,11 @@ retrieval backends own search and indexing sophistication.
 ```
 Agent / AgentConnect / CLI / MCP
         ↓
-WikiBrain API              (cli/wiki/api.py — the stable facade)
+WikiBrain API              (cli/brainconnect/api.py — the stable facade)
         ↓
 trusted memory ledger      (sources, candidates, claims, scopes, supersessions)
         ↓
-retrieval backend adapter  (cli/wiki/backends/base.py)
+retrieval backend adapter  (cli/brainconnect/backends/base.py)
         ↓
 SQLite FTS / Graphiti / Cognee / vector DB
         ↓
@@ -192,7 +193,7 @@ demote a claim. It surfaces in the review queue for a human.
 
 ## 6. Public API
 
-`cli/wiki/api.py` is the stable facade. Same concepts across Python, CLI, and MCP.
+`cli/brainconnect/api.py` is the stable facade. Same concepts across Python, CLI, and MCP.
 
 ```python
 recall(repo, RecallRequest)              -> RecallPack

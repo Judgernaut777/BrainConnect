@@ -1,7 +1,7 @@
 # SAFETY.md — memory safety in BrainConnect
 
-> The product is **BrainConnect**. The Python package is still `wiki` and the safety
-> module is `cli/wiki/safety/`; that rename is deferred (see [STATUS.md](STATUS.md)).
+> The product is **BrainConnect** and the Python package is `brainconnect`; the
+> safety module lives at `cli/brainconnect/safety/` (see [STATUS.md](STATUS.md)).
 
 BrainConnect owns **policy**: when memory is scanned, and what happens when something
 is found. It does not own **detection**. Detection is delegated to modular engines,
@@ -29,7 +29,7 @@ claim is true.
 They are independent, and the code keeps them that way: **no engine and no policy
 may set `trusted`.** Safety can withhold, mask, or block. It cannot vouch. The
 acceptance gate asserts this structurally, by parsing every module in
-`cli/wiki/safety/` and checking the identifier appears nowhere in its AST.
+`cli/brainconnect/safety/` and checking the identifier appears nowhere in its AST.
 
 So a promoted, correct, well-sourced claim that happens to carry a live credential
 is *trusted* and *unsafe*, and recall returns it **trusted, with the credential
@@ -293,7 +293,7 @@ and so nobody mistakes the plan for the product.
 
 ## The legacy `fascia-guard` seam
 
-`cli/wiki/guard_hook.py` was an optional, dormant integration with an external
+`cli/brainconnect/guard_hook.py` was an optional, dormant integration with an external
 `fascia-guard` package. It is **deprecated and inert**: every function is a no-op,
 `available()` returns False regardless of what is installed, and setting
 `FASCIA_GUARD` or `FASCIA_GUARD_ENFORCE` warns rather than re-enabling it.
