@@ -10,7 +10,7 @@ log.md
 # repo; the brain's actual content stays on your machine. The live DB (the source
 # of truth) is already outside the tree; raw/inbox are captured material and wiki/
 # + db/dump.sql are regenerable projections. Leading "/" anchors to the repo root
-# so the cli/wiki/ PACKAGE SOURCE is NOT affected.
+# so the cli/brainconnect/ PACKAGE SOURCE is NOT affected.
 /raw/
 /inbox/
 /wiki/

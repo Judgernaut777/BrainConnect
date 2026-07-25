@@ -17,7 +17,6 @@ import base64 as _base64
 import inspect
 import json
 import os
-import shutil as _shutil
 import struct as _struct
 import sys
 import tempfile
@@ -1287,21 +1286,22 @@ def main():
         check("safety: an external tool with no executable is unavailable",
               _Missing().available() is False)
 
-        # timeout -> TimeoutError, which the pipeline maps to EngineStatus.timeout
+        # timeout -> TimeoutError, which the pipeline maps to EngineStatus.timeout.
+        # Driven through the Python interpreter (not `sh`) so the check runs on every
+        # CI leg, including windows-latest where `sh` is normally absent.
         class _Sleeper(ExternalToolEngine):
             name, version = "sleeper", "cli"
             capabilities = frozenset({CAP.source_or_repository_secrets})
-            executable = "sh"
+            executable = sys.executable
 
             def argv(self, target):
-                return ["sh", "-c", "sleep 5"]
+                return [sys.executable, "-c", "import time; time.sleep(5)"]
 
             def parse(self, stdout, text):  # pragma: no cover - never reached
                 return []
-        if _shutil.which("sh"):
-            check("safety: an external tool that overruns raises TimeoutError",
-                  _raises(TimeoutError, _Sleeper(timeout_seconds=0.2).scan,
-                          EngineScanRequest(text="x", surface="memory_promotion")))
+        check("safety: an external tool that overruns raises TimeoutError",
+              _raises(TimeoutError, _Sleeper(timeout_seconds=0.2).scan,
+                      EngineScanRequest(text="x", surface="memory_promotion")))
 
         # json_lines / locate: the parse plumbing every CLI adapter shares
         check("safety: json_lines skips prose and keeps objects",
@@ -1416,6 +1416,24 @@ def main():
         check("safety: baseline finds an email and maps it to redaction",
               _r.has(CAT.pii) and _r.decision is D.redact
               and "example.com" not in _r.text)
+
+        # --- truncation: the unscanned tail is not clean (BC-SEC-1) -----------
+        # A secret placed past max_text_chars never reaches an engine. It must NOT
+        # be stored verbatim while the scan reports clean: the dropped tail becomes
+        # a scanner_error so the decision escalates, and the returned text never
+        # carries bytes no engine looked at.
+        _trunc_cfg = safetycfg.load({"enabled": True, "max_text_chars": 64,
+                                     "engines": {"baseline": {"enabled": True,
+                                                              "required": True}}})
+        _trunc_secret = "ghp_" + "b" * 36
+        _trunc_text = ("a" * 200) + " " + _trunc_secret
+        _trunc = safetymod.scan(_trunc_text, surface="memory_candidate",
+                                config=_trunc_cfg)
+        check("safety: a secret past max_text_chars is NOT stored in plaintext",
+              _trunc_secret not in _trunc.text)
+        check("safety: an over-length capture is not marked clean (tail unscanned)",
+              _trunc.decision is not D.allow and not _trunc.clean
+              and _trunc.has(CAT.scanner_error))
 
         # --- aggregation: union, dedup, span merge, severity, attribution -----
         _install(detect_secrets=lambda **kw: _FakeSecret(), presidio=lambda **kw: _FakeQuiet())
@@ -7492,7 +7510,8 @@ def _okf_validate_checks():
         check("okf/validate: a relative symlink escaping the root is rejected",
               "symlink_escape" in codes(adapter.validate_bundle(str(d2))))
     else:
-        check("okf/validate: symlink-escape (skipped: no symlink support)", True)
+        print("    (symlink-escape checks skipped — no symlink support on this "
+              "platform)")
 
     # -- unsafe / unicode filenames -------------------------------------------
     d = valid_bundle("unicode_ok")

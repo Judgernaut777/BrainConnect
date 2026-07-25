@@ -39,7 +39,7 @@ AgentConnect's dogfood; the contract has since been extended, additively, by saf
 | | |
 |---|---|
 | Schema version | **9** (`schema.SCHEMA_VERSION == migrate.latest_version()`); unchanged by safety |
-| Gate | **951 checks pass, 0 failures** |
+| Gate | **0 failures**; the check count varies with platform and optional extras (Linux core ≈ 950, Linux + `[semantic]` (numpy) ≈ 953; Windows is lower — the POSIX-only exec-bit and symlink-escape checks do not run there) |
 | Retrieval backend | `sqlite_fts` (the only one implemented) |
 | Transport | in-process Python API + MCP stdio + **`brainconnect serve` HTTP (default 127.0.0.1:8787)** |
 | Content safety | enforced at `memory_candidate`, `memory_recall`, `memory_promotion` |
@@ -53,9 +53,12 @@ python3 tests/acceptance.py       # from the repo root
 ```
 
 The gate is **offline**. The only safety engine that runs is the pure-stdlib
-baseline; every third-party adapter is exercised through a fake. The count is
-identical whether or not `detect-secrets` is installed — verified both ways. A suite
-that needs TruffleHog installed is a suite that gets skipped.
+baseline; every third-party adapter is exercised through a fake. Installing
+`detect-secrets` does not change the count (it is exercised through a fake either
+way), but the total is **not** a single fixed number: it depends on the platform
+(Windows skips the POSIX-only exec-bit and symlink-escape checks) and on optional
+extras (`[semantic]`/numpy adds the mixed-model checks). A suite that needs
+TruffleHog installed is a suite that gets skipped.
 
 ---
 

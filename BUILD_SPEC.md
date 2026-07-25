@@ -654,6 +654,6 @@ Passes (each a small validated JSON contract, one retry, per-task model routing)
 - No `cli/librarian` pass writes a promotion/resolve/close/approve; each stores
   only pending/proposal/draft rows (asserted in the offline suite with a stubbed
   transport).
-- `wiki` (`cli/wiki/`) still contains zero model/network-billable calls.
+- `brainconnect` (`cli/brainconnect/`) still contains zero model/network-billable calls.
 - `maintain` preflights reachability and degrades clearly when the endpoint is
   down; a single failing stage does not abort the rest.
